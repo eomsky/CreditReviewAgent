@@ -31,9 +31,10 @@ async def retrieve_context(state: QAState) -> dict[str, Any]:
     documents = search_documents(state["question"])
     document_context = "\n\n".join(
         f"[문서: {item['title']}]\n{item['content']}" for item in documents
-    )
+    )[:3_500]
+    sql_context = sql_result.as_context()[:4_000] if sql_result else "조회된 정형 데이터 없음"
     return {
-        "sql_context": sql_result.as_context() if sql_result else "조회된 정형 데이터 없음",
+        "sql_context": sql_context,
         "sql_used": sql_result.sql if sql_result else "",
         "document_context": document_context or "검색된 내부 문서 없음",
         "sources": sorted({item["title"] for item in documents}),

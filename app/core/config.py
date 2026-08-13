@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     COLAB_LLM_API_KEY: str = "change-me"
     COLAB_LLM_TIMEOUT_SECONDS: int = 300
     MAX_UPLOAD_SIZE_MB: int = 25
-    MAX_DOCUMENT_TEXT_CHARS: int = 24_000
+    # vLLM max-model-len=8192 안에서 DB/RAG/첨부 근거와 출력을 함께 수용한다.
+    MAX_DOCUMENT_TEXT_CHARS: int = 4_000
     MAX_IMAGES_PER_MESSAGE: int = 2
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/database/credit_review.db"
@@ -31,7 +32,7 @@ class Settings(BaseSettings):
 
     CHROMA_COLLECTION: str = "credit_documents"
     POC_AUTO_SEED: bool = True
-    SQL_MAX_ROWS: int = 50
+    SQL_MAX_ROWS: int = 10
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     RAG_TOP_K: int = 5
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import logging
 from typing import Any
 
 import httpx
@@ -21,6 +22,7 @@ from app.services.guardrails import check_input
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class ChatMessage(BaseModel):
@@ -73,8 +75,15 @@ async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:
     try:
         result = await run_qa(question, attachment_context)
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=502, detail="Colab LLM이 요청을 거절했습니다.") from exc
+        response_text = exc.response.text[:2_000]
+        logger.exception("Colab LLM HTTP error %s: %s", exc.response.status_code, response_text)
+        if exc.response.status_code == 400 and "context" in response_text.lower():
+            detail = "첨부 문서의 내용이 너무 길어 분석 범위를 초과했습니다. 문서를 나누거나 질문 범위를 좁혀 주세요."
+        else:
+            detail = "Colab LLM이 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."
+        raise HTTPException(status_code=502, detail=detail) from exc
     except (httpx.RequestError, KeyError, TypeError, ValueError) as exc:
+        logger.exception("Chat pipeline error")
         raise HTTPException(status_code=503, detail="Colab LLM 또는 RAG 서비스에 연결할 수 없습니다.") from exc
 
     answer = result.get("final_answer", "")
