@@ -1,0 +1,2 @@
+"""Validate uploaded file node."""
+

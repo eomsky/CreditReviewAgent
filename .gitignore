@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data (persisted in Codespaces, never committed)
+data/database/*
+data/vector_db/*
+data/uploads/*
+data/processed/*
+data/backups/*
+logs/*
+
+!data/database/.gitkeep
+!data/vector_db/.gitkeep
+!data/uploads/.gitkeep
+!data/processed/.gitkeep
+!data/backups/.gitkeep
+!logs/.gitkeep
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

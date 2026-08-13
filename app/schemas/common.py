@@ -1,0 +1,2 @@
+"""Common API response schemas."""
+

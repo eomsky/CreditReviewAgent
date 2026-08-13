@@ -1,0 +1,2 @@
+"""Multimodal document extraction prompts."""
+

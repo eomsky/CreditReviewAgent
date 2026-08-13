@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Credit Review Assistant</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="brand-mark">CR</span><span>Credit Review</span></div>
+      <button class="new-chat" id="newChat">＋ 새 심사 대화</button>
+      <div class="section-label">최근 대화</div>
+      <nav class="history" id="history"></nav>
+      <div class="sidebar-footer">
+        <div class="status"><span class="status-dot"></span><span>Colab LLM 연결 대기</span></div>
+        <button class="settings-button" aria-label="설정">⚙ 설정</button>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <button class="menu-button" id="menuButton" aria-label="메뉴">☰</button>
+        <div>
+          <h1>여신심사 지원 에이전트</h1>
+          <p>Qwen2.5-VL-32B · 내부 문서 기반 분석</p>
+        </div>
+        <button class="export-button">보고서 내보내기</button>
+      </header>
+
+      <section class="conversation" id="conversation" aria-live="polite">
+        <div class="welcome" id="welcome">
+          <div class="assistant-logo">CR</div>
+          <h2>어떤 심사를 도와드릴까요?</h2>
+          <p>기업 자료를 첨부하거나 질문을 입력하면 재무·비재무 정보를 함께 검토합니다.</p>
+          <div class="suggestions">
+            <button data-prompt="첨부한 재무제표를 분석하고 주요 위험요인을 정리해줘.">재무제표 위험 분석</button>
+            <button data-prompt="이 기업의 상환능력을 평가하기 위해 추가로 필요한 자료를 알려줘.">필요 자료 점검</button>
+            <button data-prompt="여신심사 보고서 초안을 작성해줘.">심사보고서 초안</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="composer-wrap">
+        <div class="attachment-list" id="attachmentList"></div>
+        <form class="composer" id="chatForm">
+          <input id="fileInput" type="file" multiple hidden accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json">
+          <button type="button" class="icon-button" id="attachButton" aria-label="파일 첨부">＋</button>
+          <textarea id="messageInput" rows="1" placeholder="기업 또는 심사 내용에 대해 질문하세요" aria-label="메시지"></textarea>
+          <button type="submit" class="send-button" id="sendButton" aria-label="전송">↑</button>
+        </form>
+        <p class="notice">AI의 분석은 심사 담당자의 최종 판단을 대체하지 않습니다.</p>
+      </section>
+    </main>
+  </div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
