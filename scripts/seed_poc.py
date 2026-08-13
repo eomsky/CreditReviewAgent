@@ -98,15 +98,17 @@ def create_xlsx(path: Path) -> None:
     workbook.save(path)
 
 
-def seed_documents() -> int:
+def seed_documents(force: bool = False) -> int:
     SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
     created: list[Path] = []
     for index, (title, paragraphs) in enumerate(DOCUMENTS.items()):
         path = SAMPLE_DIR / (f"{title}.pdf" if index == 0 else f"{title}.docx")
-        create_pdf(path, title, paragraphs) if index == 0 else create_docx(path, title, paragraphs)
+        if force or not path.exists():
+            create_pdf(path, title, paragraphs) if index == 0 else create_docx(path, title, paragraphs)
         created.append(path)
     xlsx_path = SAMPLE_DIR / "여신정책_정량기준.xlsx"
-    create_xlsx(xlsx_path)
+    if force or not xlsx_path.exists():
+        create_xlsx(xlsx_path)
     created.append(xlsx_path)
 
     for path in created:
@@ -122,10 +124,10 @@ def seed_documents() -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true", help="Reserved for future destructive reseeding")
-    parser.parse_args()
+    parser.add_argument("--force", action="store_true", help="Regenerate sample document files")
+    args = parser.parse_args()
     initialize_database(seed=True)
-    print(f"POC seed complete: {seed_documents()} documents")
+    print(f"POC seed complete: {seed_documents(force=args.force)} documents")
 
 
 if __name__ == "__main__":
