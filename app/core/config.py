@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     BACKUP_DIR: Path = PROJECT_ROOT / "data" / "backups"
 
     CHROMA_COLLECTION: str = "credit_documents"
+    POC_AUTO_SEED: bool = True
+    SQL_MAX_ROWS: int = 50
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     RAG_TOP_K: int = 5
 

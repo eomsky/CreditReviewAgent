@@ -1,4 +1,9 @@
-const state = { messages: [], files: [], busy: false };
+const state = {
+  messages: [],
+  files: [],
+  busy: false,
+  conversationId: crypto.randomUUID().replaceAll("-", ""),
+};
 const conversation = document.querySelector("#conversation");
 const welcome = document.querySelector("#welcome");
 const form = document.querySelector("#chatForm");
@@ -16,15 +21,12 @@ function addMessage(role, content, temporary = false) {
   welcome?.remove();
   const item = document.createElement("article");
   item.className = `message ${role}`;
-  if (temporary) item.dataset.temporary = "true";
-
   if (role === "assistant") {
     const avatar = document.createElement("div");
     avatar.className = "message-avatar";
     avatar.textContent = "CR";
     item.append(avatar);
   }
-
   const body = document.createElement("div");
   body.className = `message-body${temporary ? " typing" : ""}`;
   body.textContent = content;
@@ -52,19 +54,42 @@ async function sendMessage(text) {
   input.value = "";
   resizeInput();
 
-  const typing = addMessage("assistant", "첨부 자료와 질문을 검토하는 중", true);
+  const typing = addMessage("assistant", "내부 데이터와 첨부자료를 조회하고 답변을 검증하는 중", true);
   try {
     const attachments = await Promise.all(state.files.map(fileToPayload));
-    const response = await fetch("/api/v1/chat/completions", {
+    const response = await fetch("/api/v1/chat/completions/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: state.messages, attachments }),
+      body: JSON.stringify({
+        messages: state.messages,
+        attachments,
+        conversation_id: state.conversationId,
+      }),
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || "응답을 받지 못했습니다.");
-    typing.remove();
-    addMessage("assistant", payload.message.content);
-    state.messages.push(payload.message);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || "응답을 받지 못했습니다.");
+    }
+
+    state.conversationId = response.headers.get("X-Conversation-ID") || state.conversationId;
+    const messageBody = typing.querySelector(".message-body");
+    messageBody.classList.remove("typing");
+    messageBody.textContent = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let content = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      content += decoder.decode(value, { stream: true });
+      messageBody.textContent = content;
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+    content += decoder.decode();
+    messageBody.textContent = content;
+    if (!content) throw new Error("빈 응답을 받았습니다.");
+
+    state.messages.push({ role: "assistant", content });
     state.files = [];
     fileInput.value = "";
     renderAttachments();
@@ -82,14 +107,11 @@ async function sendMessage(text) {
 function fileToPayload(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const encoded = String(reader.result).split(",", 2)[1];
-      resolve({
-        filename: file.name,
-        mime_type: file.type || "application/octet-stream",
-        data_base64: encoded,
-      });
-    };
+    reader.onload = () => resolve({
+      filename: file.name,
+      mime_type: file.type || "application/octet-stream",
+      data_base64: String(reader.result).split(",", 2)[1],
+    });
     reader.onerror = () => reject(new Error(`${file.name} 파일을 읽을 수 없습니다.`));
     reader.readAsDataURL(file);
   });
