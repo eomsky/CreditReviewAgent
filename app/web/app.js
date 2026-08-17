@@ -53,9 +53,11 @@ function addMessage(role, content, metadata = {}) {
 
 async function sendMessage(text) {
   if (!state.activeCase || !text.trim() || state.busy) return;
+  const requestId = crypto.randomUUID(); state.busyRequestId = requestId;
   state.busy = true; $("#sendButton").disabled = true; addMessage("user", text.trim()); state.messages.push({ role: "user", content: text.trim() });
   $("#messageInput").value = ""; const pending = addMessage("assistant", "자료를 조회하고 있습니다…"); pending.classList.add("loading");
-  const contentNode = pending.querySelector(".message-content"); let streamedAnswer = "";
+  const contentNode = pending.querySelector(".message-content"); let streamedAnswer = ""; let provisionalMessage = null;
+  const releaseForNextQuestion = () => { if (state.busyRequestId === requestId) { state.busy = false; state.busyRequestId = null; $("#sendButton").disabled = false; } };
   try {
     const attachments = await Promise.all(state.files.map(fileToPayload));
     const response = await fetch("/api/v1/chat/completions/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: state.messages, attachments, conversation_id: state.conversationId, case_id: state.activeCase.id }) });
@@ -68,19 +70,20 @@ async function sendMessage(text) {
         if (!line.trim()) continue; const event = JSON.parse(line);
         if (event.type === "meta") state.conversationId = event.conversation_id;
         if (event.type === "status" && !streamedAnswer) contentNode.textContent = event.content;
-        if (event.type === "token") { streamedAnswer = event.replace ? event.content : streamedAnswer + event.content; contentNode.textContent = streamedAnswer; pending.classList.remove("loading"); $("#conversation").scrollTop = $("#conversation").scrollHeight; }
+        if (event.type === "status" && event.stage === "validate" && streamedAnswer && !provisionalMessage) { provisionalMessage = { role: "assistant", content: streamedAnswer }; state.messages.push(provisionalMessage); releaseForNextQuestion(); }
+        if (event.type === "token") { streamedAnswer = event.replace ? event.content : streamedAnswer + event.content; if (provisionalMessage) provisionalMessage.content = streamedAnswer; contentNode.textContent = streamedAnswer; pending.classList.remove("loading"); $("#conversation").scrollTop = $("#conversation").scrollHeight; }
         if (event.type === "done") finalEvent = event;
         if (event.type === "error") throw new Error(event.detail);
       }
       if (done) break;
     }
     if (!finalEvent) throw new Error("스트림이 완료되기 전에 연결이 종료되었습니다.");
-    pending.remove(); addMessage("assistant", finalEvent.message, finalEvent.metadata); state.messages.push({ role: "assistant", content: finalEvent.message });
+    if (provisionalMessage) { provisionalMessage.content = finalEvent.message; contentNode.textContent = finalEvent.message; pending.classList.remove("loading"); }
+    else { pending.remove(); addMessage("assistant", finalEvent.message, finalEvent.metadata); state.messages.push({ role: "assistant", content: finalEvent.message }); }
     state.files = []; renderPendingFiles(); await Promise.all([loadDocuments(), loadEvents()]);
-  } catch (error) { pending.remove(); addMessage("assistant", `연결 오류: ${error.message}`); }
-  finally { state.busy = false; $("#sendButton").disabled = false; }
+  } catch (error) { if (!provisionalMessage) { pending.remove(); addMessage("assistant", `연결 오류: ${error.message}`); } else { pending.classList.remove("loading"); } }
+  finally { releaseForNextQuestion(); }
 }
-
 async function loadDocuments() {
   if (!state.activeCase) return; const data = await api(`/api/v1/cases/${state.activeCase.id}/documents`); const list = $("#documentList"); list.replaceChildren(); $("#documentCount").textContent = data.items.length;
   data.items.forEach((doc) => { const card = el("article", "document-card"); const ext = doc.original_name.split(".").pop().toUpperCase(); card.innerHTML = `<div class="file-icon ${ext.toLowerCase()}">${ext.slice(0,3)}</div><div class="file-info"><strong>${escapeText(doc.original_name)}</strong><small>${ext} · ${formatSize(doc.size_bytes)}</small><span>업로드: ${new Date(doc.created_at).toLocaleString("ko-KR")}</span></div><span class="doc-status ${doc.status.toLowerCase()}">${doc.status === "READY" ? "사용 가능" : doc.status}</span><button class="doc-delete" aria-label="삭제">×</button>`; card.querySelector(".doc-delete").addEventListener("click", () => removeDocument(doc.id)); list.append(card); });
