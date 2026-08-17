@@ -1,46 +1,5 @@
-<!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI 여신심사 챗봇</title>
-  <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">AI</span><div><strong>AI 여신심사 챗봇</strong><small>CreditReviewAgent</small></div></div>
-      <button class="primary wide" id="newCase">＋ 새 심사 시작</button>
-      <div class="section-title">심사건</div>
-      <label class="search"><span>⌕</span><input id="caseSearch" placeholder="심사건 검색"></label>
-      <div class="filters" id="caseFilters"><button class="active" data-status="">전체</button><button data-status="IN_PROGRESS">진행중</button><button data-status="COMPLETED">완료</button></div>
-      <nav class="case-list" id="caseList"></nav>
-      <div class="side-links"><button>◈ 공통 지식 관리</button><button>▧ 템플릿 관리</button><button>▤ 보고서 목록</button><button>⚙ 설정</button></div>
-    </aside>
-
-    <section class="workspace">
-      <header class="topbar">
-        <button class="case-selector" id="caseSelector"><span>▦</span><span><strong id="selectorTitle">심사건 선택</strong><small id="selectorId">-</small></span><span>⌄</span></button>
-        <div class="top-actions"><button id="traceToggle">⋮ 생성과정 보기</button><button id="documentToggle">▣ 참고자료 <b id="documentCount">0</b></button></div>
-        <div class="profile"><span class="profile-avatar">●</span><span><strong>김심사</strong><small>여신심사부</small></span></div>
-      </header>
-
-      <div class="content-grid" id="contentGrid">
-        <main class="chat-panel">
-          <section class="case-header"><div><h1 id="caseTitle">심사건을 선택하세요</h1><p id="caseMeta">새 심사를 시작하거나 왼쪽 목록에서 선택하세요.</p></div><span class="badge" id="caseStatus">대기</span></section>
-          <section class="conversation" id="conversation" aria-live="polite">
-            <div class="empty-state"><div class="bot">AI</div><h2>여신심사를 시작해 보세요</h2><p>심사건 자료와 공통 지식을 함께 조회해 근거 기반 답변을 제공합니다.</p></div>
-          </section>
-          <section class="composer-wrap"><div class="pending-files" id="pendingFiles"></div><form class="composer" id="chatForm"><input id="chatFile" type="file" multiple hidden><button type="button" id="chatAttach" class="attach">⌕</button><textarea id="messageInput" rows="1" placeholder="메시지를 입력하세요..."></textarea><button class="send" id="sendButton">➤ 전송</button></form><small>Enter로 전송, Shift+Enter로 줄바꿈</small></section>
-        </main>
-
-        <aside class="trace-panel hidden" id="tracePanel"><div class="panel-title"><div><h2>생성과정</h2><p>Generator · Validator 실행 이력</p></div><button data-close="trace">×</button></div><div class="timeline" id="timeline"></div></aside>
-        <aside class="documents-panel" id="documentsPanel"><div class="panel-title"><h2>참고자료</h2><button data-close="documents">×</button></div><label class="dropzone" id="dropzone"><input id="documentInput" type="file" multiple hidden accept=".pdf,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json"><span class="upload-icon">⇧</span><strong>파일을 드래그하거나 클릭하여 업로드</strong><small>PDF, DOCX, XLSX, TXT (최대 25MB)</small></label><p class="docs-label">현재 심사건에 업로드된 자료</p><div class="document-list" id="documentList"></div><button class="manage">▣ 전체 자료 관리</button></aside>
-      </div>
-    </section>
-  </div>
-
-  <dialog id="caseDialog"><form method="dialog" id="caseForm"><h2>새 심사 시작</h2><label>기업명<input name="company_name" required placeholder="예: A기업"></label><label>심사 유형<select name="review_type"><option>정기심사</option><option>신규 여신</option><option>한도 증액</option></select></label><label>심사건 제목<input name="title" required placeholder="예: A기업 / 2026 정기심사"></label><div class="dialog-actions"><button value="cancel">취소</button><button class="primary" value="default" id="createCaseButton">생성</button></div></form></dialog>
-  <script src="/static/app.js" defer></script>
-</body>
-</html>
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>기업여신 AI 심사지원</title><link rel="stylesheet" href="/static/styles.css"></head><body><main class="app-shell">
+<header class="app-header"><div><h1>기업여신 AI 심사지원</h1><span>정보계 조회 기반 · 심사의견 작성 지원</span></div><strong>♙ 김담당</strong></header>
+<section class="loan-context"><dl><div><dt>여신신청번호</dt><dd id="loanNumber">2026-0817-00124</dd></div><div><dt>기업명</dt><dd id="companyName">A기업 주식회사</dd></div><div><dt>법인번호</dt><dd>110111-1234567</dd></div><div><dt>신청금액</dt><dd id="loanAmount">50억원</dd></div><div><dt>취급점</dt><dd>강남기업금융센터</dd></div></dl><div class="freshness"><span>▣ 정보계 기준 2026-08-16</span><span>ⓘ 최신 신청정보는 대화창에서 추가할 수 있습니다.</span><button id="dataStatusButton"><i class="light orange"></i> 입력 데이터 현황⌄</button></div><section id="dataStatusPopover" class="popover hidden"><header><b>입력 데이터 현황</b><span><i class="light orange"></i> 부분 충족</span><button data-close-status>×</button></header><p>정보계 조회 데이터와 사용자 추가자료 기준</p><b>4개 부문 중 3개 입수</b><div class="progress"><i></i></div><div id="dataSectionList"></div><small>미입수 자료는 오른쪽 대화창에서 추가할 수 있습니다.</small></section></section>
+<section class="workbench"><article class="opinion-panel"><header class="panel-head"><div><h2>심사의견</h2><p>대화와 추가 자료를 반영해 자동으로 업데이트됩니다.</p></div><div><span id="opinionUpdated">초기 의견</span><button id="copyOpinion">복사</button><button id="selectOpinion">전체 선택</button></div></header><div id="opinionContent" class="opinion"><h3>1. 여신 신청 개요</h3><p>신청금액 50억원, 운전자금 목적의 3년 만기 여신입니다.</p><h3>2. 상환능력 검토</h3><p>최근 3개년 영업이익은 안정적이며 DSCR 1.35배로 상환여력을 보유합니다.</p><h3>3. 재무상태 및 현금흐름</h3><p>부채비율 178.2%, 차입금의존도 61.2%로 업종 평균 대비 다소 높습니다.</p><h3>4. 주요 위험요인</h3><p>차입 부담, 원자재 가격 변동 및 거래처 집중 위험을 확인해야 합니다.</p><h3>5. 종합 심사의견</h3><p>상환능력은 양호하나 재무구조 부담과 담보 적정성의 추가 확인이 필요합니다.</p></div></article><aside class="chat-panel"><header class="panel-head"><div><h2>AI 심사 대화</h2><p>추가 정보와 자료를 입력하면 심사의견이 갱신됩니다.</p></div></header><section id="conversation" class="conversation"><article class="assistant"><b>AI</b><p>정보계 자료를 확인했습니다. 변경사항이나 추가자료가 있으면 알려주세요.</p></article></section><div id="pendingFiles" class="pending-files"></div><form id="chatForm" class="composer"><input id="chatFile" type="file" multiple hidden accept="image/*,.pdf,.docx,.xlsx,.csv,.txt"><button type="button" id="chatAttach">⌕</button><div><textarea id="messageInput" rows="2" placeholder="스크린샷·PDF·엑셀을 추가하거나 메시지를 입력하세요"></textarea><small>계정계 화면 캡처도 분석할 수 있습니다 · PNG, JPG, PDF, XLSX</small></div><button id="sendButton" class="send">➤</button></form></aside></section></main>
+<dialog id="dataDetailDialog"><form method="dialog" class="detail"><header><div><h2 id="detailTitle">여신신청정보</h2><p>입력 데이터 상세 <span>공통 상세 양식</span></p></div><div class="badges"><span id="detailReceipt">● 정보계 원본 있음</span><span>정보계 기준 2026-08-16</span><button value="close">×</button></div></header><div class="notice">▣ 정보계 원본은 직접 수정하지 않으며, 현재 작업본만 수정할 수 있습니다.</div><main class="detail-scroll"><section class="compare"><header><div><h3>원본·작업본 비교</h3><small>● 변경　● 추가　● 삭제　● 미입수　● 동일</small></div><div><span id="lastImported">최종 입수 2026-08-16 09:00</span><button type="button" id="reimportButton">↻ 재입수</button><small>정보계 최신 데이터를 읽기 전용으로 다시 조회합니다.</small></div></header><div class="table-wrap"><table><thead><tr><th>항목 하이라키</th><th>현재 작업본 <small>✎ 직접 입력 가능</small></th><th>정보계 원본 🔒</th><th>상태</th></tr></thead><tbody id="compareBody"></tbody></table></div><div id="dirtyBar" class="dirty hidden"><div><b>● 저장되지 않은 변경 <span id="dirtyCount">0</span>건</b><span>여러 행을 함께 저장하면 하나의 버전으로 생성됩니다.</span></div><div><button type="button" id="cancelChanges">변경 취소</button><button type="button" id="saveChanges" class="primary">변경사항 저장</button><small id="nextVersionHint"></small></div></div></section><section class="versions"><header><h3>버전 이력 <b id="versionCount">1</b></h3><p>V1은 상세 화면이 최초 생성된 시점입니다. 복원하면 다음 버전이 생성됩니다.</p></header><div id="versionList"></div></section></main><footer><button type="button" id="downloadOriginal">⇩ 원본 내려받기</button><button value="close">닫기</button></footer></form></dialog><script src="/static/app.js" defer></script></body></html>

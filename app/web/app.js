@@ -1,137 +1,29 @@
-const state = { cases: [], activeCase: null, messages: [], files: [], busy: false, filter: "", conversationId: null, eventSource: null };
-const $ = (selector) => document.querySelector(selector);
-const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
-
-async function api(url, options = {}) {
-  const response = await fetch(url, options);
-  if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `요청 실패 (${response.status})`); }
-  return response.status === 204 ? null : response.json();
-}
-
-function statusLabel(status) { return { IN_PROGRESS: "진행중", COMPLETED: "완료", ON_HOLD: "보류" }[status] || status; }
-function relativeTime(value) { const days = Math.floor((Date.now() - new Date(value)) / 86400000); return days <= 0 ? "방금 전" : `${days}일 전`; }
-function formatSize(bytes) { return bytes > 1048576 ? `${(bytes / 1048576).toFixed(1)}MB` : `${Math.ceil(bytes / 1024)}KB`; }
-function escapeText(value) { const span = document.createElement("span"); span.textContent = value; return span.innerHTML; }
-
-async function loadCases(selectId) {
-  const query = new URLSearchParams();
-  if (state.filter) query.set("status", state.filter);
-  const search = $("#caseSearch").value.trim(); if (search) query.set("query", search);
-  const data = await api(`/api/v1/cases?${query}`);
-  state.cases = data.items;
-  renderCases();
-  const target = state.cases.find((item) => item.id === selectId) || state.cases[0];
-  if (target && state.activeCase?.id !== target.id) await selectCase(target);
-}
-
-function renderCases() {
-  const list = $("#caseList"); list.replaceChildren();
-  state.cases.forEach((item) => {
-    const button = el("button", `case-card${item.id === state.activeCase?.id ? " active" : ""}`);
-    button.innerHTML = `<strong>${escapeText(item.title)}</strong><small>${item.id}</small><span><b>${statusLabel(item.status)}</b> · 자료 ${item.document_count}건 <em>${relativeTime(item.updated_at)}</em></span>`;
-    button.addEventListener("click", () => selectCase(item)); list.append(button);
-  });
-  if (!state.cases.length) list.append(el("p", "empty-list", "조건에 맞는 심사건이 없습니다."));
-}
-
-async function selectCase(item) {
-  state.activeCase = item; state.messages = []; state.files = []; state.conversationId = crypto.randomUUID().replaceAll("-", "");
-  $("#selectorTitle").textContent = item.title; $("#selectorId").textContent = item.id; $("#caseTitle").textContent = item.title;
-  $("#caseMeta").textContent = `담당자: ${item.owner_name}  |  생성일: ${new Date(item.created_at).toLocaleDateString("ko-KR")}`;
-  $("#caseStatus").textContent = statusLabel(item.status); $("#caseStatus").dataset.status = item.status;
-  $("#conversation").innerHTML = `<div class="empty-state compact"><div class="bot">AI</div><h2>${escapeText(item.company_name)} 심사 자료를 기반으로 질문해 주세요.</h2></div>`;
-  renderCases(); renderPendingFiles(); startEventStream(); await Promise.all([loadDocuments(), loadEvents()]);
-}
-
-function addMessage(role, content, metadata = {}) {
-  $(".empty-state")?.remove(); const article = el("article", `message ${role}`);
-  if (role === "assistant") article.append(el("div", "message-avatar", "AI"));
-  const bubble = el("div", "message-bubble"); bubble.append(el("div", "message-content", content));
-  if (role === "assistant" && metadata.sources?.length) { const sources = el("div", "source-box"); sources.append(el("strong", "", "참고한 주요 자료")); metadata.sources.forEach((source) => sources.append(el("span", "", `▧ ${source}`))); bubble.append(sources); }
-  article.append(bubble); $("#conversation").append(article); $("#conversation").scrollTop = $("#conversation").scrollHeight; return article;
-}
-
-function setSendButton(sending, controller = null) {
-  const button = $("#sendButton"); state.currentAbortController = controller;
-  button.dataset.mode = sending ? "stop" : "send"; button.classList.toggle("stop", sending);
-  button.textContent = sending ? "■" : "➤ 전송"; button.setAttribute("aria-label", sending ? "답변 생성 중지" : "메시지 전송");
-}
-
-async function sendMessage(text) {
-  if (!state.activeCase || !text.trim() || state.busy) return;
-  const requestId = crypto.randomUUID(); const controller = new AbortController(); state.busyRequestId = requestId;
-  state.busy = true; setSendButton(true, controller); addMessage("user", text.trim()); state.messages.push({ role: "user", content: text.trim() });
-  $("#messageInput").value = ""; const pending = addMessage("assistant", "자료를 조회하고 있습니다…"); pending.classList.add("loading");
-  const contentNode = pending.querySelector(".message-content"); let streamedAnswer = ""; let provisionalMessage = null;
-  const releaseForNextQuestion = () => { if (state.busyRequestId === requestId) { state.busy = false; state.busyRequestId = null; setSendButton(false); } };
-  try {
-    const attachments = await Promise.all(state.files.map(fileToPayload));
-    const response = await fetch("/api/v1/chat/completions/stream", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ messages: state.messages, attachments, conversation_id: state.conversationId, case_id: state.activeCase.id }) });
-    if (!response.ok || !response.body) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `요청 실패 (${response.status})`); }
-    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let finalEvent = null;
-    while (true) {
-      const { value, done } = await reader.read(); buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      const lines = buffer.split("\n"); buffer = done ? "" : lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue; const event = JSON.parse(line);
-        if (event.type === "meta") state.conversationId = event.conversation_id;
-        if (event.type === "status" && !streamedAnswer) contentNode.textContent = event.content;
-        if (event.type === "status" && event.stage === "validate" && streamedAnswer && !provisionalMessage) { provisionalMessage = { role: "assistant", content: streamedAnswer }; state.messages.push(provisionalMessage); releaseForNextQuestion(); }
-        if (event.type === "token") { streamedAnswer = event.replace ? event.content : streamedAnswer + event.content; if (provisionalMessage) provisionalMessage.content = streamedAnswer; contentNode.textContent = streamedAnswer; pending.classList.remove("loading"); $("#conversation").scrollTop = $("#conversation").scrollHeight; }
-        if (event.type === "done") finalEvent = event;
-        if (event.type === "error") throw new Error(event.detail);
-      }
-      if (done) break;
-    }
-    if (!finalEvent) throw new Error("스트림이 완료되기 전에 연결이 종료되었습니다.");
-    if (provisionalMessage) { provisionalMessage.content = finalEvent.message; contentNode.textContent = finalEvent.message; pending.classList.remove("loading"); }
-    else { pending.remove(); addMessage("assistant", finalEvent.message, finalEvent.metadata); state.messages.push({ role: "assistant", content: finalEvent.message }); }
-    state.files = []; renderPendingFiles(); await Promise.all([loadDocuments(), loadEvents()]);
-  } catch (error) {
-    if (error.name === "AbortError") { pending.classList.remove("loading"); if (streamedAnswer) { contentNode.textContent = streamedAnswer; if (!provisionalMessage) state.messages.push({ role: "assistant", content: streamedAnswer }); } else pending.remove(); }
-    else if (!provisionalMessage) { pending.remove(); addMessage("assistant", `연결 오류: ${error.message}`); }
-    else pending.classList.remove("loading");
-  } finally { releaseForNextQuestion(); }
-}
-async function loadDocuments() {
-  if (!state.activeCase) return; const data = await api(`/api/v1/cases/${state.activeCase.id}/documents`); const list = $("#documentList"); list.replaceChildren(); $("#documentCount").textContent = data.items.length;
-  data.items.forEach((doc) => { const card = el("article", "document-card"); const ext = doc.original_name.split(".").pop().toUpperCase(); card.innerHTML = `<div class="file-icon ${ext.toLowerCase()}">${ext.slice(0,3)}</div><div class="file-info"><strong>${escapeText(doc.original_name)}</strong><small>${ext} · ${formatSize(doc.size_bytes)}</small><span>업로드: ${new Date(doc.created_at).toLocaleString("ko-KR")}</span></div><span class="doc-status ${doc.status.toLowerCase()}">${doc.status === "READY" ? "사용 가능" : doc.status}</span><button class="doc-delete" aria-label="삭제">×</button>`; card.querySelector(".doc-delete").addEventListener("click", () => removeDocument(doc.id)); list.append(card); });
-  if (!data.items.length) list.append(el("p", "empty-list", "업로드된 자료가 없습니다."));
-}
-
-async function uploadDocuments(files) {
-  if (!state.activeCase) return; for (const file of files) { const body = new FormData(); body.append("file", file); body.append("conversation_id", state.conversationId); await api(`/api/v1/cases/${state.activeCase.id}/documents`, { method: "POST", body }); } await loadDocuments(); await loadCases(state.activeCase.id);
-}
-async function removeDocument(id) { if (!confirm("이 문서를 현재 심사건에서 삭제할까요?")) return; await api(`/api/v1/cases/${state.activeCase.id}/documents/${id}`, { method: "DELETE" }); await loadDocuments(); }
-
-async function loadEvents() {
-  if (!state.activeCase) return; const data = await api(`/api/v1/cases/${state.activeCase.id}/events${state.conversationId ? `?conversation_id=${state.conversationId}` : ""}`); const timeline = $("#timeline"); timeline.replaceChildren();
-  data.items.forEach((event) => { const row = el("article", "event"); row.innerHTML = `<i></i><div><strong>${escapeText(event.event_type)}</strong><small>${new Date(event.created_at).toLocaleTimeString("ko-KR")}</small><p>${escapeText(event.content || event.agent)}</p></div>`; timeline.append(row); });
-  if (!data.items.length) timeline.append(el("p", "empty-list", "질문을 보내면 생성·검증 과정이 표시됩니다."));
-}
-
-function startEventStream() {
-  state.eventSource?.close();
-  if (!state.activeCase) return;
-  const query = state.conversationId ? `?conversation_id=${state.conversationId}` : "";
-  state.eventSource = new EventSource(`/api/v1/cases/${state.activeCase.id}/events/stream${query}`);
-  state.eventSource.onmessage = () => loadEvents().catch(() => {});
-}
-function fileToPayload(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ filename: file.name, mime_type: file.type || "application/octet-stream", data_base64: String(reader.result).split(",", 2)[1] }); reader.onerror = reject; reader.readAsDataURL(file); }); }
-function renderPendingFiles() { $("#pendingFiles").replaceChildren(...state.files.map((file) => el("span", "file-chip", `▧ ${file.name}`))); }
-
-$("#chatForm").addEventListener("submit", (event) => { event.preventDefault(); if ($("#sendButton").dataset.mode === "stop") { state.currentAbortController?.abort(); return; } sendMessage($("#messageInput").value); });
-$("#messageInput").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#chatForm").requestSubmit(); } });
-$("#chatAttach").addEventListener("click", () => $("#chatFile").click());
-$("#chatFile").addEventListener("change", () => { state.files = [...$("#chatFile").files]; renderPendingFiles(); });
-$("#documentInput").addEventListener("change", () => uploadDocuments([...$("#documentInput").files]).catch((error) => alert(error.message)));
-$("#dropzone").addEventListener("dragover", (event) => event.preventDefault()); $("#dropzone").addEventListener("drop", (event) => { event.preventDefault(); uploadDocuments([...event.dataTransfer.files]).catch((error) => alert(error.message)); });
-$("#newCase").addEventListener("click", () => $("#caseDialog").showModal());
-$("#caseForm").addEventListener("submit", async (event) => { if (event.submitter?.value === "cancel") return; event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); try { const item = await api("/api/v1/cases", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }); $("#caseDialog").close(); event.currentTarget.reset(); await loadCases(item.id); } catch (error) { alert(error.message); } });
-$("#caseSearch").addEventListener("input", () => loadCases(state.activeCase?.id));
-$("#caseFilters").addEventListener("click", (event) => { const button = event.target.closest("button"); if (!button) return; $("#caseFilters .active").classList.remove("active"); button.classList.add("active"); state.filter = button.dataset.status; loadCases(); });
-$("#traceToggle").addEventListener("click", () => { $("#tracePanel").classList.toggle("hidden"); $("#contentGrid").classList.toggle("trace-open", !$("#tracePanel").classList.contains("hidden")); loadEvents(); });
-$("#documentToggle").addEventListener("click", () => $("#documentsPanel").classList.toggle("hidden"));
-$("[data-close=trace]").addEventListener("click", () => { $("#tracePanel").classList.add("hidden"); $("#contentGrid").classList.remove("trace-open"); });
-$("[data-close=documents]").addEventListener("click", () => $("#documentsPanel").classList.add("hidden"));
-loadCases().catch((error) => addMessage("assistant", `초기화 오류: ${error.message}`));
+const $=s=>document.querySelector(s);const esc=v=>{const n=document.createElement("span");n.textContent=v;return n.innerHTML};
+const state={caseId:null,conversationId:crypto.randomUUID().replaceAll("-",""),messages:[],files:[],busy:false,abort:null,activeSection:"여신신청정보"};
+const sections={
+"여신신청정보":{source:"정보계",received:true,fields:[["식별정보_여신신청번호","2026-0817-00124"],["식별정보_신청일자","2026-08-14"],["기업정보_기업명","A기업 주식회사"],["기업정보_사업자등록번호","123-45-67890"],["신청조건_신청금액","50억원"],["신청조건_자금용도","운전자금"],["신청조건_여신기간","3년"],["상환조건_상환방식","만기일시상환"],["상환조건_상환재원","영업현금흐름"],["취급정보_취급점","강남기업금융센터"],["담보정보_담보유형","부동산 근저당권 1순위"]]},
+"재무상태표":{source:"정보계",received:true,fields:[["자산_유동자산_현금및현금성자산","12억원"],["자산_비유동자산_유형자산","74억원"],["부채_유동부채_단기차입금","31억원"],["부채_비유동부채_장기차입금","42억원"],["자본_자본금","20억원"],["지표_부채비율","178.2%"]]},
+"포괄손익계산서":{source:"정보계",received:true,fields:[["수익_영업수익_매출액","128억원"],["비용_매출원가_매출원가","96억원"],["이익_영업이익_영업이익","8.4억원"],["이익_당기순이익_당기순이익","5.1억원"]]},
+"담보정보":{source:"미등록",received:false,fields:[["담보_기본정보_담보유형",""],["담보_평가정보_평가금액",""],["담보_권리정보_선순위금액",""]]}
+};
+for(const s of Object.values(sections)){s.original=Object.fromEntries(s.fields);s.current={...s.original};s.versions=[{id:1,summary:"상세 화면 최초 생성 · 정보계 원본 기준",source:"시스템",time:"09:00",snapshot:{...s.current}}];s.dirty=new Map()}
+function renderStatus(){const list=$("#dataSectionList");list.innerHTML="";Object.entries(sections).forEach(([name,s])=>{const b=document.createElement("button");b.className="data-row";b.innerHTML=`<strong>${name}</strong><span>${s.source}</span><i class="chip ${s.received?"ready":"missing"}">${s.received?"입수":"미입수"}</i>`;b.onclick=()=>openDetail(name);list.append(b)})}
+function toggleStatus(force){const p=$("#dataStatusPopover"),show=force??p.classList.contains("hidden");p.classList.toggle("hidden",!show);$("#dataStatusButton").setAttribute("aria-expanded",String(show))}
+function openDetail(name){state.activeSection=name;toggleStatus(false);$("#detailTitle").textContent=name;const s=sections[name];$("#detailReceipt").textContent=s.received?"● 정보계 원본 있음":"● 정보계 원본 없음";renderDetail();$("#dataDetailDialog").showModal()}
+function rowStatus(s,key){if(s.dirty.has(key))return["수정 중","changed"];if(!(key in s.original))return["추가","changed"];if(s.current[key]!==s.original[key])return["변경","changed"];return["동일",""]}
+function renderDetail(){const s=sections[state.activeSection],body=$("#compareBody");body.innerHTML="";Object.keys({...s.original,...s.current}).forEach(key=>{const [label,cls]=rowStatus(s,key),tr=document.createElement("tr");tr.className=cls;tr.innerHTML=`<td title="${esc(key)}">${esc(key)}</td><td><input data-key="${esc(key)}" value="${esc(s.current[key]??"")}" aria-label="${esc(key)} 현재 작업본"></td><td>${esc(s.original[key]??"미입수")}</td><td><span class="status ${cls}">${label}</span></td>`;tr.querySelector("input").oninput=e=>editField(key,e.target.value,tr);body.append(tr)});renderDirty();renderVersions()}
+function editField(key,value,tr){const s=sections[state.activeSection];if(!s.dirty.has(key))s.dirty.set(key,s.current[key]??"");s.current[key]=value;if(value===s.dirty.get(key))s.dirty.delete(key);const [label,cls]=rowStatus(s,key);tr.className=cls;tr.lastElementChild.innerHTML=`<span class="status ${cls}">${label}</span>`;renderDirty()}
+function renderDirty(){const s=sections[state.activeSection],n=s.dirty.size;$("#dirtyBar").classList.toggle("hidden",!n);$("#dirtyCount").textContent=n;$("#nextVersionHint").textContent=`저장 시 V${s.versions.length+1} 생성`}
+function renderVersions(){const s=sections[state.activeSection],list=$("#versionList");$("#versionCount").textContent=s.versions.length;list.innerHTML="";[...s.versions].reverse().forEach((v,i)=>{const row=document.createElement("div");row.className=`version-row ${i===0?"current":""}`;row.innerHTML=`<b>V${v.id}${i===0?' <small>현재</small>':''}</b><span>${esc(v.summary)}</span><span>${esc(v.source)}</span><time>${v.time}</time><div>${i?`<button data-view>보기</button> <button data-restore>이 버전으로 복원</button>`:"-"}</div>`;row.querySelector("[data-view]")?.addEventListener("click",()=>viewVersion(v));row.querySelector("[data-restore]")?.addEventListener("click",()=>restoreVersion(v));list.append(row)})}
+function viewVersion(v){const rows=Object.entries(v.snapshot).map(([k,val])=>`${k}: ${val}`).join("\n");alert(`V${v.id} · ${v.summary}\n\n${rows}`)}
+function restoreVersion(v){const s=sections[state.activeSection],id=s.versions.length+1;s.current={...v.snapshot};s.dirty=new Map();s.versions.push({id,summary:`V${v.id} 정보로 복원`,source:"사용자 복원",time:new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}),snapshot:{...s.current}});renderDetail()}
+function saveChanges(){const s=sections[state.activeSection];if(!s.dirty.size)return;const keys=[...s.dirty.keys()],id=s.versions.length+1;s.versions.push({id,summary:`${keys.length}개 항목 직접 수정`,source:"사용자 키인",time:new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}),snapshot:{...s.current}});s.dirty=new Map();renderDetail();if(state.activeSection==="여신신청정보")$("#loanAmount").textContent=s.current["신청조건_신청금액"]}
+function cancelChanges(){const s=sections[state.activeSection];for(const[k,v]of s.dirty)s.current[k]=v;s.dirty=new Map();renderDetail()}
+function reimport(){const s=sections[state.activeSection];$("#lastImported").textContent=`최종 입수 ${new Date().toLocaleString("ko-KR")}`;if(!s.received){s.received=true;s.source="정보계";s.original={...s.current};s.versions.push({id:s.versions.length+1,summary:"정보계 데이터 재입수",source:"정보계",time:new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}),snapshot:{...s.current}})}renderStatus();renderDetail()}
+function addMessage(role,text){const a=document.createElement("article");a.className=role;a.innerHTML=role==="assistant"?`<b>AI</b><p>${esc(text)}</p>`:`<p>${esc(text)}</p>`;$("#conversation").append(a);$("#conversation").scrollTop=$("#conversation").scrollHeight;return a}
+const filePayload=f=>new Promise((ok,no)=>{const r=new FileReader;r.onload=()=>ok({filename:f.name,mime_type:f.type||"application/octet-stream",data_base64:String(r.result).split(",",2)[1]});r.onerror=no;r.readAsDataURL(f)});
+function setSending(on,c=null){state.busy=on;state.abort=c;const b=$("#sendButton");b.dataset.mode=on?"stop":"send";b.classList.toggle("stop",on);b.textContent=on?"■":"➤"}
+async function sendMessage(text){if(!state.caseId||!text.trim()||state.busy)return;const c=new AbortController;setSending(true,c);addMessage("user",text.trim());state.messages.push({role:"user",content:text.trim()});$("#messageInput").value="";const pending=addMessage("assistant","자료를 조회하고 있습니다…"),p=pending.querySelector("p");let answer="",final=null;try{const attachments=await Promise.all(state.files.map(filePayload));const res=await fetch("/api/v1/chat/completions/stream",{method:"POST",headers:{"Content-Type":"application/json"},signal:c.signal,body:JSON.stringify({messages:state.messages,attachments,conversation_id:state.conversationId,case_id:state.caseId})});if(!res.ok||!res.body)throw Error(`요청 실패 (${res.status})`);const reader=res.body.getReader(),dec=new TextDecoder;let buf="";while(true){const{value,done}=await reader.read();buf+=dec.decode(value||new Uint8Array,{stream:!done});const lines=buf.split("\n");buf=done?"":lines.pop();for(const line of lines){if(!line.trim())continue;const e=JSON.parse(line);if(e.type==="meta")state.conversationId=e.conversation_id;if(e.type==="token"){answer=e.replace?e.content:answer+e.content;p.textContent=answer}if(e.type==="done")final=e;if(e.type==="error")throw Error(e.detail)}if(done)break}if(final){p.textContent=final.message;state.messages.push({role:"assistant",content:final.message});$("#opinionContent").innerText=final.message;$("#opinionUpdated").textContent="방금 업데이트됨"}state.files=[];renderFiles()}catch(e){if(e.name==="AbortError"){if(!answer)pending.remove()}else p.textContent=`연결 오류: ${e.message}`}finally{setSending(false)}}
+function renderFiles(){$("#pendingFiles").innerHTML=state.files.map(f=>`<span>▧ ${esc(f.name)}</span>`).join("")}
+async function init(){renderStatus();const r=await fetch("/api/v1/cases"),d=await r.json(),item=d.items[0];if(item){state.caseId=item.id;$("#companyName").textContent=item.company_name}}
+$("#dataStatusButton").onclick=()=>toggleStatus();$("[data-close-status]").onclick=()=>toggleStatus(false);document.addEventListener("click",e=>{if(!e.target.closest(".loan-context"))toggleStatus(false)});$("#saveChanges").onclick=saveChanges;$("#cancelChanges").onclick=cancelChanges;$("#reimportButton").onclick=reimport;$("#downloadOriginal").onclick=()=>{const s=sections[state.activeSection],a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(s.original,null,2)],{type:"application/json"}));a.download=`${state.activeSection}_정보계원본.json`;a.click()};$("#copyOpinion").onclick=()=>navigator.clipboard.writeText($("#opinionContent").innerText);$("#selectOpinion").onclick=()=>{const r=document.createRange();r.selectNodeContents($("#opinionContent"));getSelection().removeAllRanges();getSelection().addRange(r)};$("#chatAttach").onclick=()=>$("#chatFile").click();$("#chatFile").onchange=e=>{state.files=[...e.target.files];renderFiles()};$("#chatForm").onsubmit=e=>{e.preventDefault();if($("#sendButton").dataset.mode==="stop")state.abort?.abort();else sendMessage($("#messageInput").value)};$("#messageInput").onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("#chatForm").requestSubmit()}};init().catch(e=>addMessage("assistant",`초기화 오류: ${e.message}`));
