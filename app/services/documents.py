@@ -25,13 +25,14 @@ def persist_and_index(
     filename: str,
     mime_type: str,
     raw: bytes,
+    case_id: str | None = None,
 ) -> tuple[Path, str, str]:
     stored = settings.UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_filename(filename)}"
     stored.write_bytes(raw)
     text = extract_text(stored, mime_type, raw)
-    file_id = save_uploaded_file(conversation_id, filename, stored, mime_type, len(raw), text)
+    file_id = save_uploaded_file(conversation_id, filename, stored, mime_type, len(raw), text, case_id=case_id)
     if text.strip():
-        index_document(file_id, filename, stored, mime_type, text)
+        index_document(file_id, filename, stored, mime_type, text, case_id=case_id)
     return stored, text, file_id
 
 

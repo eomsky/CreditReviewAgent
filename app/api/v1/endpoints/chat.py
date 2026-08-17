@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.clients.colab_llm import ColabLLMClient
 from app.core.config import settings
-from app.database.poc_store import ensure_conversation, save_message
+from app.database.poc_store import ensure_conversation, ensure_default_case, save_message
 from app.graphs.qa_graph import run_qa
 from app.services.documents import persist_and_index
 from app.services.guardrails import check_input
@@ -40,6 +40,7 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=100)
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=10)
     conversation_id: str | None = Field(default=None, max_length=64)
+    case_id: str | None = Field(default=None, max_length=64)
 
 
 class ChatResponse(BaseModel):
@@ -55,16 +56,17 @@ def _last_user_question(request: ChatRequest) -> str:
     return message.content
 
 
-async def _prepare_request(request: ChatRequest) -> tuple[str, str, str]:
+async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:
     question = _last_user_question(request)
-    conversation_id = ensure_conversation(request.conversation_id)
+    case_id = request.case_id or ensure_default_case()
+    conversation_id = ensure_conversation(request.conversation_id, case_id)
     save_message(conversation_id, "user", question)
-    attachment_context = await _process_attachments(conversation_id, request.attachments)
-    return conversation_id, question, attachment_context
+    attachment_context = await _process_attachments(conversation_id, case_id, request.attachments)
+    return conversation_id, case_id, question, attachment_context
 
 
 async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:
-    conversation_id, question, attachment_context = await _prepare_request(request)
+    conversation_id, case_id, question, attachment_context = await _prepare_request(request)
     guardrail = check_input(question)
     if not guardrail.allowed:
         answer = guardrail.response or "해당 요청에는 답변할 수 없습니다."
@@ -73,7 +75,7 @@ async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:
         return conversation_id, answer, metadata
 
     try:
-        result = await run_qa(question, attachment_context)
+        result = await run_qa(question, attachment_context, case_id, conversation_id)
     except httpx.HTTPStatusError as exc:
         response_text = exc.response.text[:2_000]
         logger.exception("Colab LLM HTTP error %s: %s", exc.response.status_code, response_text)
@@ -90,7 +92,7 @@ async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:
     metadata = {
         "agent": "validator_b" if not result.get("approved", True) else "generator_a_verified",
         "validator_approved": result.get("approved", True),
-        "validator_issues": result.get("issues", []),
+        "validator_issues": result.get("validation_issues", []),
         "sql": result.get("sql_used", ""),
         "sources": result.get("sources", []),
     }
@@ -127,7 +129,7 @@ async def create_streaming_chat_completion(request: ChatRequest) -> StreamingRes
     )
 
 
-async def _process_attachments(conversation_id: str, attachments: list[ChatAttachment]) -> str:
+async def _process_attachments(conversation_id: str, case_id: str, attachments: list[ChatAttachment]) -> str:
     image_count = sum(item.mime_type.startswith("image/") for item in attachments)
     if image_count > settings.MAX_IMAGES_PER_MESSAGE:
         raise HTTPException(
@@ -141,12 +143,12 @@ async def _process_attachments(conversation_id: str, attachments: list[ChatAttac
         if attachment.mime_type.startswith("image/"):
             image_text = await _analyze_image(attachment, raw)
             stored, _, file_id = persist_and_index(
-                conversation_id, attachment.filename, attachment.mime_type, raw
+                conversation_id, attachment.filename, attachment.mime_type, raw, case_id
             )
             # Images have no local text extractor, so persist their model description separately.
             from app.database.poc_store import index_document
 
-            index_document(file_id, attachment.filename, stored, attachment.mime_type, image_text)
+            index_document(file_id, attachment.filename, stored, attachment.mime_type, image_text, case_id=case_id)
             extracted.append(f"[첨부 이미지 {attachment.filename}]\n{image_text}")
         else:
             try:

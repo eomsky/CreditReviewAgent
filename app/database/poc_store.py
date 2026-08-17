@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS loans (
 );
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
+    case_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -96,6 +97,8 @@ CREATE TABLE IF NOT EXISTS uploaded_files (
 );
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
+    case_id TEXT,
+    knowledge_scope TEXT NOT NULL DEFAULT 'case',
     title TEXT NOT NULL,
     source_path TEXT NOT NULL,
     mime_type TEXT NOT NULL,
@@ -108,16 +111,102 @@ CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks USING fts5(
     source_path UNINDEXED,
     tokenize='unicode61'
 );
+CREATE TABLE IF NOT EXISTS review_cases (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    company_name TEXT NOT NULL,
+    review_type TEXT NOT NULL,
+    owner_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'IN_PROGRESS',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id TEXT NOT NULL REFERENCES review_cases(id),
+    conversation_id TEXT,
+    agent TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    sources_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
 """
 
 
 def initialize_database(seed: bool = True) -> None:
     with connect() as connection:
         connection.executescript(SCHEMA)
+        _ensure_column(connection, "conversations", "case_id", "TEXT")
+        _ensure_column(connection, "uploaded_files", "case_id", "TEXT")
+        _ensure_column(connection, "uploaded_files", "status", "TEXT NOT NULL DEFAULT 'READY'")
+        _ensure_column(connection, "uploaded_files", "error_message", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "documents", "case_id", "TEXT")
+        _ensure_column(connection, "documents", "knowledge_scope", "TEXT NOT NULL DEFAULT 'case'")
         count = connection.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
         if seed and count == 0:
             _seed_financial_data(connection)
 
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def create_case(title: str, company_name: str, review_type: str = "정기심사", owner_name: str = "김심사") -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    case_id = f"CASE-{datetime.now(UTC):%Y}-{uuid.uuid4().hex[:6].upper()}"
+    with connect() as connection:
+        connection.execute(
+            "INSERT INTO review_cases VALUES (?,?,?,?,?,?,?,?,NULL)",
+            (case_id, title, company_name, review_type, owner_name, "IN_PROGRESS", now, now),
+        )
+    return get_case(case_id) or {}
+
+
+def get_case(case_id: str) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            """SELECT c.*,(SELECT COUNT(*) FROM uploaded_files f WHERE f.case_id=c.id) document_count
+            FROM review_cases c WHERE c.id=?""", (case_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_cases(status: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        clauses.append("c.status=?")
+        params.append(status)
+    if query:
+        clauses.append("(c.title LIKE ? OR c.company_name LIKE ? OR c.id LIKE ?)")
+        params.extend([f"%{query}%"] * 3)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with connect() as connection:
+        rows = connection.execute(
+            f"""SELECT c.*,(SELECT COUNT(*) FROM uploaded_files f WHERE f.case_id=c.id) document_count
+            FROM review_cases c{where} ORDER BY c.updated_at DESC""", params
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def update_case_status(case_id: str, status: str) -> dict[str, Any] | None:
+    now = datetime.now(UTC).isoformat()
+    with connect() as connection:
+        connection.execute(
+            "UPDATE review_cases SET status=?,updated_at=?,completed_at=? WHERE id=?",
+            (status, now, now if status == "COMPLETED" else None, case_id),
+        )
+    return get_case(case_id)
+
+
+def ensure_default_case() -> str:
+    with connect() as connection:
+        row = connection.execute("SELECT id FROM review_cases ORDER BY created_at LIMIT 1").fetchone()
+    return str(row[0]) if row else create_case("A기업 / 2026 정기심사", "A기업")["id"]
 
 def _seed_financial_data(connection: sqlite3.Connection, company_count: int = 180) -> None:
     rng = random.Random(20260814)
@@ -167,16 +256,17 @@ def _seed_financial_data(connection: sqlite3.Connection, company_count: int = 18
             )
 
 
-def ensure_conversation(conversation_id: str | None = None) -> str:
+def ensure_conversation(conversation_id: str | None = None, case_id: str | None = None) -> str:
     conversation_id = conversation_id or uuid.uuid4().hex
     now = datetime.now(UTC).isoformat()
     with connect() as connection:
         connection.execute(
-            "INSERT OR IGNORE INTO conversations(id,created_at,updated_at) VALUES (?,?,?)",
-            (conversation_id, now, now),
+            "INSERT OR IGNORE INTO conversations(id,case_id,created_at,updated_at) VALUES (?,?,?,?)",
+            (conversation_id, case_id, now, now),
         )
+        if case_id:
+            connection.execute("UPDATE conversations SET case_id=? WHERE id=?", (case_id, conversation_id))
     return conversation_id
-
 
 def save_message(conversation_id: str, role: str, content: str, metadata: dict[str, Any] | None = None) -> None:
     now = datetime.now(UTC).isoformat()
@@ -188,15 +278,79 @@ def save_message(conversation_id: str, role: str, content: str, metadata: dict[s
         connection.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conversation_id))
 
 
-def save_uploaded_file(conversation_id: str, filename: str, path: Path, mime_type: str, size: int, text: str) -> str:
+def save_uploaded_file(
+    conversation_id: str,
+    filename: str,
+    path: Path,
+    mime_type: str,
+    size: int,
+    text: str,
+    case_id: str | None = None,
+    status: str = "READY",
+) -> str:
     file_id = uuid.uuid4().hex
     with connect() as connection:
         connection.execute(
-            "INSERT INTO uploaded_files VALUES (?,?,?,?,?,?,?,?)",
-            (file_id, conversation_id, filename, str(path), mime_type, size, text, datetime.now(UTC).isoformat()),
+            """INSERT INTO uploaded_files
+            (id,conversation_id,original_name,stored_path,mime_type,size_bytes,extracted_text,created_at,case_id,status,error_message)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (file_id, conversation_id, filename, str(path), mime_type, size, text, datetime.now(UTC).isoformat(), case_id, status, ""),
         )
     return file_id
 
+
+def list_case_documents(case_id: str) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """SELECT id,original_name,mime_type,size_bytes,status,error_message,created_at
+            FROM uploaded_files WHERE case_id=? ORDER BY created_at DESC""", (case_id,)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_case_document(case_id: str, document_id: str) -> Path | None:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT stored_path FROM uploaded_files WHERE id=? AND case_id=?", (document_id, case_id)
+        ).fetchone()
+        if not row:
+            return None
+        connection.execute("DELETE FROM document_chunks WHERE document_id=?", (document_id,))
+        connection.execute("DELETE FROM documents WHERE id=?", (document_id,))
+        connection.execute("DELETE FROM uploaded_files WHERE id=?", (document_id,))
+    return Path(row[0])
+
+
+def record_agent_event(
+    case_id: str,
+    conversation_id: str | None,
+    agent: str,
+    event_type: str,
+    content: str = "",
+    sources: list[str] | None = None,
+) -> None:
+    with connect() as connection:
+        connection.execute(
+            """INSERT INTO agent_events(case_id,conversation_id,agent,event_type,content,sources_json,created_at)
+            VALUES (?,?,?,?,?,?,?)""",
+            (case_id, conversation_id, agent, event_type, content, json.dumps(sources or [], ensure_ascii=False), datetime.now(UTC).isoformat()),
+        )
+
+
+def list_agent_events(case_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
+    query: str = "SELECT * FROM agent_events WHERE case_id=?"
+    params: list[Any] = [case_id]
+    if conversation_id:
+        query += " AND conversation_id=?"
+        params.append(conversation_id)
+    with connect() as connection:
+        rows = connection.execute(query + " ORDER BY id", params).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["sources"] = json.loads(item.pop("sources_json"))
+        result.append(item)
+    return result
 
 @dataclass(slots=True)
 class SQLQueryResult:
@@ -277,11 +431,23 @@ class TextToSQLService:
             raise ValueError("허용되지 않은 테이블입니다.")
 
 
-def index_document(document_id: str, title: str, source_path: Path, mime_type: str, text: str) -> int:
+def index_document(
+    document_id: str,
+    title: str,
+    source_path: Path,
+    mime_type: str,
+    text: str,
+    case_id: str | None = None,
+    knowledge_scope: str = "case",
+) -> int:
     chunks = _chunk_text(text)
     now = datetime.now(UTC).isoformat()
     with connect() as connection:
-        connection.execute("INSERT OR REPLACE INTO documents VALUES (?,?,?,?,?)", (document_id, title, str(source_path), mime_type, now))
+        connection.execute(
+            """INSERT OR REPLACE INTO documents
+            (id,case_id,knowledge_scope,title,source_path,mime_type,created_at) VALUES (?,?,?,?,?,?,?)""",
+            (document_id, case_id, knowledge_scope, title, str(source_path), mime_type, now),
+        )
         connection.execute("DELETE FROM document_chunks WHERE document_id=?", (document_id,))
         connection.executemany(
             "INSERT INTO document_chunks(document_id,title,content,source_path) VALUES (?,?,?,?)",
@@ -290,19 +456,21 @@ def index_document(document_id: str, title: str, source_path: Path, mime_type: s
     return len(chunks)
 
 
-def search_documents(question: str, limit: int | None = None) -> list[dict[str, Any]]:
+def search_documents(question: str, limit: int | None = None, case_id: str | None = None) -> list[dict[str, Any]]:
     tokens = [token for token in re.findall(r"[0-9A-Za-z가-힣]+", question) if len(token) >= 2]
     if not tokens:
         return []
     query = " OR ".join(f'"{token}"' for token in tokens[:10])
     with connect() as connection:
         rows = connection.execute(
-            """SELECT document_id,title,content,source_path,bm25(document_chunks) score
-            FROM document_chunks WHERE document_chunks MATCH ? ORDER BY score LIMIT ?""",
-            (query, limit or settings.RAG_TOP_K),
+            """SELECT ch.document_id,ch.title,ch.content,ch.source_path,bm25(document_chunks) score,
+            d.case_id,d.knowledge_scope
+            FROM document_chunks ch JOIN documents d ON d.id=ch.document_id
+            WHERE document_chunks MATCH ? AND (? IS NULL OR d.knowledge_scope='common' OR d.case_id=?)
+            ORDER BY score LIMIT ?""",
+            (query, case_id, case_id, limit or settings.RAG_TOP_K),
         ).fetchall()
     return [dict(row) for row in rows]
-
 
 def _chunk_text(text: str, size: int = 900, overlap: int = 120) -> list[str]:
     cleaned = re.sub(r"\n{3,}", "\n\n", text).strip()

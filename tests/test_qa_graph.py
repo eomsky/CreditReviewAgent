@@ -15,7 +15,9 @@ def test_generator_answer_is_revised_by_validator(tmp_path: Path, monkeypatch: p
     responses = iter(
         [
             "근거 없이 모두 안전합니다.",
-            '{"approved": false, "issues": ["근거 없는 단정"], "revised_answer": "고위험 기업은 부채비율과 상환재원을 추가 검토해야 합니다."}',
+            '{"approved": false, "issues": ["근거 없는 단정"]}',
+            "고위험 기업은 부채비율과 상환재원을 추가 검토해야 합니다.",
+            '{"approved": true, "issues": []}',
         ]
     )
 
@@ -24,5 +26,6 @@ def test_generator_answer_is_revised_by_validator(tmp_path: Path, monkeypatch: p
 
     monkeypatch.setattr(ColabLLMClient, "complete", fake_complete)
     result = asyncio.run(run_qa("고위험 기업을 알려줘"))
-    assert result["approved"] is False
+    assert result["approved"] is True
+    assert result["revision_count"] == 1
     assert "추가 검토" in result["final_answer"]

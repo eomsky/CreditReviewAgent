@@ -3,57 +3,44 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Credit Review Assistant</title>
+  <title>AI 여신심사 챗봇</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar" id="sidebar">
-      <div class="brand"><span class="brand-mark">CR</span><span>Credit Review</span></div>
-      <button class="new-chat" id="newChat">＋ 새 심사 대화</button>
-      <div class="section-label">최근 대화</div>
-      <nav class="history" id="history"></nav>
-      <div class="sidebar-footer">
-        <div class="status"><span class="status-dot"></span><span>Colab LLM 연결 대기</span></div>
-        <button class="settings-button" aria-label="설정">⚙ 설정</button>
-      </div>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">AI</span><div><strong>AI 여신심사 챗봇</strong><small>CreditReviewAgent</small></div></div>
+      <button class="primary wide" id="newCase">＋ 새 심사 시작</button>
+      <div class="section-title">심사건</div>
+      <label class="search"><span>⌕</span><input id="caseSearch" placeholder="심사건 검색"></label>
+      <div class="filters" id="caseFilters"><button class="active" data-status="">전체</button><button data-status="IN_PROGRESS">진행중</button><button data-status="COMPLETED">완료</button></div>
+      <nav class="case-list" id="caseList"></nav>
+      <div class="side-links"><button>◈ 공통 지식 관리</button><button>▧ 템플릿 관리</button><button>▤ 보고서 목록</button><button>⚙ 설정</button></div>
     </aside>
 
-    <main class="main-panel">
+    <section class="workspace">
       <header class="topbar">
-        <button class="menu-button" id="menuButton" aria-label="메뉴">☰</button>
-        <div>
-          <h1>여신심사 지원 에이전트</h1>
-          <p>Qwen2.5-VL-32B · 내부 문서 기반 분석</p>
-        </div>
-        <button class="export-button">보고서 내보내기</button>
+        <button class="case-selector" id="caseSelector"><span>▦</span><span><strong id="selectorTitle">심사건 선택</strong><small id="selectorId">-</small></span><span>⌄</span></button>
+        <div class="top-actions"><button id="traceToggle">⋮ 생성과정 보기</button><button id="documentToggle">▣ 참고자료 <b id="documentCount">0</b></button></div>
+        <div class="profile"><span class="profile-avatar">●</span><span><strong>김심사</strong><small>여신심사부</small></span></div>
       </header>
 
-      <section class="conversation" id="conversation" aria-live="polite">
-        <div class="welcome" id="welcome">
-          <div class="assistant-logo">CR</div>
-          <h2>어떤 심사를 도와드릴까요?</h2>
-          <p>기업 자료를 첨부하거나 질문을 입력하면 재무·비재무 정보를 함께 검토합니다.</p>
-          <div class="suggestions">
-            <button data-prompt="첨부한 재무제표를 분석하고 주요 위험요인을 정리해줘.">재무제표 위험 분석</button>
-            <button data-prompt="이 기업의 상환능력을 평가하기 위해 추가로 필요한 자료를 알려줘.">필요 자료 점검</button>
-            <button data-prompt="여신심사 보고서 초안을 작성해줘.">심사보고서 초안</button>
-          </div>
-        </div>
-      </section>
+      <div class="content-grid" id="contentGrid">
+        <main class="chat-panel">
+          <section class="case-header"><div><h1 id="caseTitle">심사건을 선택하세요</h1><p id="caseMeta">새 심사를 시작하거나 왼쪽 목록에서 선택하세요.</p></div><span class="badge" id="caseStatus">대기</span></section>
+          <section class="conversation" id="conversation" aria-live="polite">
+            <div class="empty-state"><div class="bot">AI</div><h2>여신심사를 시작해 보세요</h2><p>심사건 자료와 공통 지식을 함께 조회해 근거 기반 답변을 제공합니다.</p></div>
+          </section>
+          <section class="composer-wrap"><div class="pending-files" id="pendingFiles"></div><form class="composer" id="chatForm"><input id="chatFile" type="file" multiple hidden><button type="button" id="chatAttach" class="attach">⌕</button><textarea id="messageInput" rows="1" placeholder="메시지를 입력하세요..."></textarea><button class="send" id="sendButton">➤ 전송</button></form><small>Enter로 전송, Shift+Enter로 줄바꿈</small></section>
+        </main>
 
-      <section class="composer-wrap">
-        <div class="attachment-list" id="attachmentList"></div>
-        <form class="composer" id="chatForm">
-          <input id="fileInput" type="file" multiple hidden accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json">
-          <button type="button" class="icon-button" id="attachButton" aria-label="파일 첨부">＋</button>
-          <textarea id="messageInput" rows="1" placeholder="기업 또는 심사 내용에 대해 질문하세요" aria-label="메시지"></textarea>
-          <button type="submit" class="send-button" id="sendButton" aria-label="전송">↑</button>
-        </form>
-        <p class="notice">AI의 분석은 심사 담당자의 최종 판단을 대체하지 않습니다.</p>
-      </section>
-    </main>
+        <aside class="trace-panel hidden" id="tracePanel"><div class="panel-title"><div><h2>생성과정</h2><p>Generator · Validator 실행 이력</p></div><button data-close="trace">×</button></div><div class="timeline" id="timeline"></div></aside>
+        <aside class="documents-panel" id="documentsPanel"><div class="panel-title"><h2>참고자료</h2><button data-close="documents">×</button></div><label class="dropzone" id="dropzone"><input id="documentInput" type="file" multiple hidden accept=".pdf,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json"><span class="upload-icon">⇧</span><strong>파일을 드래그하거나 클릭하여 업로드</strong><small>PDF, DOCX, XLSX, TXT (최대 25MB)</small></label><p class="docs-label">현재 심사건에 업로드된 자료</p><div class="document-list" id="documentList"></div><button class="manage">▣ 전체 자료 관리</button></aside>
+      </div>
+    </section>
   </div>
+
+  <dialog id="caseDialog"><form method="dialog" id="caseForm"><h2>새 심사 시작</h2><label>기업명<input name="company_name" required placeholder="예: A기업"></label><label>심사 유형<select name="review_type"><option>정기심사</option><option>신규 여신</option><option>한도 증액</option></select></label><label>심사건 제목<input name="title" required placeholder="예: A기업 / 2026 정기심사"></label><div class="dialog-actions"><button value="cancel">취소</button><button class="primary" value="default" id="createCaseButton">생성</button></div></form></dialog>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

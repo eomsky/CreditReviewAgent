@@ -1,159 +1,107 @@
-const state = {
-  messages: [],
-  files: [],
-  busy: false,
-  conversationId: crypto.randomUUID().replaceAll("-", ""),
-};
-const conversation = document.querySelector("#conversation");
-const welcome = document.querySelector("#welcome");
-const form = document.querySelector("#chatForm");
-const input = document.querySelector("#messageInput");
-const sendButton = document.querySelector("#sendButton");
-const fileInput = document.querySelector("#fileInput");
-const attachmentList = document.querySelector("#attachmentList");
+const state = { cases: [], activeCase: null, messages: [], files: [], busy: false, filter: "", conversationId: null, eventSource: null };
+const $ = (selector) => document.querySelector(selector);
+const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
 
-function resizeInput() {
-  input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+async function api(url, options = {}) {
+  const response = await fetch(url, options);
+  if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `요청 실패 (${response.status})`); }
+  return response.status === 204 ? null : response.json();
 }
 
-function addMessage(role, content, temporary = false) {
-  welcome?.remove();
-  const item = document.createElement("article");
-  item.className = `message ${role}`;
-  if (role === "assistant") {
-    const avatar = document.createElement("div");
-    avatar.className = "message-avatar";
-    avatar.textContent = "CR";
-    item.append(avatar);
-  }
-  const body = document.createElement("div");
-  body.className = `message-body${temporary ? " typing" : ""}`;
-  body.textContent = content;
-  item.append(body);
-  conversation.append(item);
-  conversation.scrollTop = conversation.scrollHeight;
-  return item;
+function statusLabel(status) { return { IN_PROGRESS: "진행중", COMPLETED: "완료", ON_HOLD: "보류" }[status] || status; }
+function relativeTime(value) { const days = Math.floor((Date.now() - new Date(value)) / 86400000); return days <= 0 ? "방금 전" : `${days}일 전`; }
+function formatSize(bytes) { return bytes > 1048576 ? `${(bytes / 1048576).toFixed(1)}MB` : `${Math.ceil(bytes / 1024)}KB`; }
+function escapeText(value) { const span = document.createElement("span"); span.textContent = value; return span.innerHTML; }
+
+async function loadCases(selectId) {
+  const query = new URLSearchParams();
+  if (state.filter) query.set("status", state.filter);
+  const search = $("#caseSearch").value.trim(); if (search) query.set("query", search);
+  const data = await api(`/api/v1/cases?${query}`);
+  state.cases = data.items;
+  renderCases();
+  const target = state.cases.find((item) => item.id === selectId) || state.cases[0];
+  if (target && state.activeCase?.id !== target.id) await selectCase(target);
 }
 
-function renderAttachments() {
-  attachmentList.replaceChildren(...state.files.map((file) => {
-    const chip = document.createElement("span");
-    chip.className = "attachment-chip";
-    chip.textContent = `📎 ${file.name}`;
-    return chip;
-  }));
+function renderCases() {
+  const list = $("#caseList"); list.replaceChildren();
+  state.cases.forEach((item) => {
+    const button = el("button", `case-card${item.id === state.activeCase?.id ? " active" : ""}`);
+    button.innerHTML = `<strong>${escapeText(item.title)}</strong><small>${item.id}</small><span><b>${statusLabel(item.status)}</b> · 자료 ${item.document_count}건 <em>${relativeTime(item.updated_at)}</em></span>`;
+    button.addEventListener("click", () => selectCase(item)); list.append(button);
+  });
+  if (!state.cases.length) list.append(el("p", "empty-list", "조건에 맞는 심사건이 없습니다."));
+}
+
+async function selectCase(item) {
+  state.activeCase = item; state.messages = []; state.files = []; state.conversationId = crypto.randomUUID().replaceAll("-", "");
+  $("#selectorTitle").textContent = item.title; $("#selectorId").textContent = item.id; $("#caseTitle").textContent = item.title;
+  $("#caseMeta").textContent = `담당자: ${item.owner_name}  |  생성일: ${new Date(item.created_at).toLocaleDateString("ko-KR")}`;
+  $("#caseStatus").textContent = statusLabel(item.status); $("#caseStatus").dataset.status = item.status;
+  $("#conversation").innerHTML = `<div class="empty-state compact"><div class="bot">AI</div><h2>${escapeText(item.company_name)} 심사 자료를 기반으로 질문해 주세요.</h2></div>`;
+  renderCases(); renderPendingFiles(); startEventStream(); await Promise.all([loadDocuments(), loadEvents()]);
+}
+
+function addMessage(role, content, metadata = {}) {
+  $(".empty-state")?.remove(); const article = el("article", `message ${role}`);
+  if (role === "assistant") article.append(el("div", "message-avatar", "AI"));
+  const bubble = el("div", "message-bubble"); bubble.append(el("div", "message-content", content));
+  if (role === "assistant" && metadata.sources?.length) { const sources = el("div", "source-box"); sources.append(el("strong", "", "참고한 주요 자료")); metadata.sources.forEach((source) => sources.append(el("span", "", `▧ ${source}`))); bubble.append(sources); }
+  article.append(bubble); $("#conversation").append(article); $("#conversation").scrollTop = $("#conversation").scrollHeight; return article;
 }
 
 async function sendMessage(text) {
-  if (!text.trim() || state.busy) return;
-  state.busy = true;
-  sendButton.disabled = true;
-  addMessage("user", text.trim());
-  state.messages.push({ role: "user", content: text.trim() });
-  input.value = "";
-  resizeInput();
-
-  const typing = addMessage("assistant", "내부 데이터와 첨부자료를 조회하고 답변을 검증하는 중", true);
+  if (!state.activeCase || !text.trim() || state.busy) return;
+  state.busy = true; $("#sendButton").disabled = true; addMessage("user", text.trim()); state.messages.push({ role: "user", content: text.trim() });
+  $("#messageInput").value = ""; const pending = addMessage("assistant", "자료 조회와 답변 검증을 진행하고 있습니다…"); pending.classList.add("loading");
   try {
     const attachments = await Promise.all(state.files.map(fileToPayload));
-    const response = await fetch("/api/v1/chat/completions/stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: state.messages,
-        attachments,
-        conversation_id: state.conversationId,
-      }),
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || "응답을 받지 못했습니다.");
-    }
-
-    state.conversationId = response.headers.get("X-Conversation-ID") || state.conversationId;
-    const messageBody = typing.querySelector(".message-body");
-    messageBody.classList.remove("typing");
-    messageBody.textContent = "";
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let content = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      content += decoder.decode(value, { stream: true });
-      messageBody.textContent = content;
-      conversation.scrollTop = conversation.scrollHeight;
-    }
-    content += decoder.decode();
-    messageBody.textContent = content;
-    if (!content) throw new Error("빈 응답을 받았습니다.");
-
-    state.messages.push({ role: "assistant", content });
-    state.files = [];
-    fileInput.value = "";
-    renderAttachments();
-    saveHistory(text.trim());
-  } catch (error) {
-    typing.remove();
-    addMessage("assistant", `연결 오류: ${error.message}\nColab 서버와 Codespaces 환경변수를 확인해 주세요.`);
-  } finally {
-    state.busy = false;
-    sendButton.disabled = false;
-    input.focus();
-  }
+    const result = await api("/api/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: state.messages, attachments, conversation_id: state.conversationId, case_id: state.activeCase.id }) });
+    pending.remove(); state.conversationId = result.conversation_id; addMessage("assistant", result.message.content, result.metadata); state.messages.push(result.message); state.files = []; renderPendingFiles(); await Promise.all([loadDocuments(), loadEvents()]);
+  } catch (error) { pending.remove(); addMessage("assistant", `연결 오류: ${error.message}`); }
+  finally { state.busy = false; $("#sendButton").disabled = false; }
 }
 
-function fileToPayload(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({
-      filename: file.name,
-      mime_type: file.type || "application/octet-stream",
-      data_base64: String(reader.result).split(",", 2)[1],
-    });
-    reader.onerror = () => reject(new Error(`${file.name} 파일을 읽을 수 없습니다.`));
-    reader.readAsDataURL(file);
-  });
+async function loadDocuments() {
+  if (!state.activeCase) return; const data = await api(`/api/v1/cases/${state.activeCase.id}/documents`); const list = $("#documentList"); list.replaceChildren(); $("#documentCount").textContent = data.items.length;
+  data.items.forEach((doc) => { const card = el("article", "document-card"); const ext = doc.original_name.split(".").pop().toUpperCase(); card.innerHTML = `<div class="file-icon ${ext.toLowerCase()}">${ext.slice(0,3)}</div><div class="file-info"><strong>${escapeText(doc.original_name)}</strong><small>${ext} · ${formatSize(doc.size_bytes)}</small><span>업로드: ${new Date(doc.created_at).toLocaleString("ko-KR")}</span></div><span class="doc-status ${doc.status.toLowerCase()}">${doc.status === "READY" ? "사용 가능" : doc.status}</span><button class="doc-delete" aria-label="삭제">×</button>`; card.querySelector(".doc-delete").addEventListener("click", () => removeDocument(doc.id)); list.append(card); });
+  if (!data.items.length) list.append(el("p", "empty-list", "업로드된 자료가 없습니다."));
 }
 
-function saveHistory(title) {
-  const history = document.querySelector("#history");
-  if (history.children.length) return;
-  const button = document.createElement("button");
-  button.className = "history-item";
-  button.textContent = title;
-  history.prepend(button);
+async function uploadDocuments(files) {
+  if (!state.activeCase) return; for (const file of files) { const body = new FormData(); body.append("file", file); body.append("conversation_id", state.conversationId); await api(`/api/v1/cases/${state.activeCase.id}/documents`, { method: "POST", body }); } await loadDocuments(); await loadCases(state.activeCase.id);
+}
+async function removeDocument(id) { if (!confirm("이 문서를 현재 심사건에서 삭제할까요?")) return; await api(`/api/v1/cases/${state.activeCase.id}/documents/${id}`, { method: "DELETE" }); await loadDocuments(); }
+
+async function loadEvents() {
+  if (!state.activeCase) return; const data = await api(`/api/v1/cases/${state.activeCase.id}/events${state.conversationId ? `?conversation_id=${state.conversationId}` : ""}`); const timeline = $("#timeline"); timeline.replaceChildren();
+  data.items.forEach((event) => { const row = el("article", "event"); row.innerHTML = `<i></i><div><strong>${escapeText(event.event_type)}</strong><small>${new Date(event.created_at).toLocaleTimeString("ko-KR")}</small><p>${escapeText(event.content || event.agent)}</p></div>`; timeline.append(row); });
+  if (!data.items.length) timeline.append(el("p", "empty-list", "질문을 보내면 생성·검증 과정이 표시됩니다."));
 }
 
-form.addEventListener("submit", (event) => {
-  event.preventDefault();
-  sendMessage(input.value);
-});
-input.addEventListener("input", resizeInput);
-input.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    form.requestSubmit();
-  }
-});
-document.querySelector("#attachButton").addEventListener("click", () => fileInput.click());
-fileInput.addEventListener("change", () => {
-  state.files = [...fileInput.files];
-  renderAttachments();
-});
-document.querySelectorAll("[data-prompt]").forEach((button) => {
-  button.addEventListener("click", () => sendMessage(button.dataset.prompt));
-});
-document.querySelector("#newChat").addEventListener("click", () => window.location.reload());
-document.querySelector("#menuButton").addEventListener("click", () => {
-  document.querySelector("#sidebar").classList.toggle("open");
-});
+function startEventStream() {
+  state.eventSource?.close();
+  if (!state.activeCase) return;
+  const query = state.conversationId ? `?conversation_id=${state.conversationId}` : "";
+  state.eventSource = new EventSource(`/api/v1/cases/${state.activeCase.id}/events/stream${query}`);
+  state.eventSource.onmessage = () => loadEvents().catch(() => {});
+}
+function fileToPayload(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ filename: file.name, mime_type: file.type || "application/octet-stream", data_base64: String(reader.result).split(",", 2)[1] }); reader.onerror = reject; reader.readAsDataURL(file); }); }
+function renderPendingFiles() { $("#pendingFiles").replaceChildren(...state.files.map((file) => el("span", "file-chip", `▧ ${file.name}`))); }
 
-fetch("/api/v1/health")
-  .then((response) => {
-    if (!response.ok) throw new Error();
-    document.querySelector(".status-dot").classList.add("online");
-    document.querySelector(".status span:last-child").textContent = "Codespaces API 정상";
-  })
-  .catch(() => {});
+$("#chatForm").addEventListener("submit", (event) => { event.preventDefault(); sendMessage($("#messageInput").value); });
+$("#messageInput").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#chatForm").requestSubmit(); } });
+$("#chatAttach").addEventListener("click", () => $("#chatFile").click());
+$("#chatFile").addEventListener("change", () => { state.files = [...$("#chatFile").files]; renderPendingFiles(); });
+$("#documentInput").addEventListener("change", () => uploadDocuments([...$("#documentInput").files]).catch((error) => alert(error.message)));
+$("#dropzone").addEventListener("dragover", (event) => event.preventDefault()); $("#dropzone").addEventListener("drop", (event) => { event.preventDefault(); uploadDocuments([...event.dataTransfer.files]).catch((error) => alert(error.message)); });
+$("#newCase").addEventListener("click", () => $("#caseDialog").showModal());
+$("#caseForm").addEventListener("submit", async (event) => { if (event.submitter?.value === "cancel") return; event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); try { const item = await api("/api/v1/cases", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }); $("#caseDialog").close(); event.currentTarget.reset(); await loadCases(item.id); } catch (error) { alert(error.message); } });
+$("#caseSearch").addEventListener("input", () => loadCases(state.activeCase?.id));
+$("#caseFilters").addEventListener("click", (event) => { const button = event.target.closest("button"); if (!button) return; $("#caseFilters .active").classList.remove("active"); button.classList.add("active"); state.filter = button.dataset.status; loadCases(); });
+$("#traceToggle").addEventListener("click", () => { $("#tracePanel").classList.toggle("hidden"); $("#contentGrid").classList.toggle("trace-open", !$("#tracePanel").classList.contains("hidden")); loadEvents(); });
+$("#documentToggle").addEventListener("click", () => $("#documentsPanel").classList.toggle("hidden"));
+$("[data-close=trace]").addEventListener("click", () => { $("#tracePanel").classList.add("hidden"); $("#contentGrid").classList.remove("trace-open"); });
+$("[data-close=documents]").addEventListener("click", () => $("#documentsPanel").classList.add("hidden"));
+loadCases().catch((error) => addMessage("assistant", `초기화 오류: ${error.message}`));
