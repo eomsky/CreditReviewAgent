@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "app" / "web" / "index.html").read_text(encoding="utf-8")
 JS = (ROOT / "app" / "web" / "app.js").read_text(encoding="utf-8")
+CHAT_CSS = (ROOT / "app" / "web" / "chat-fixes.css").read_text(encoding="utf-8")
 
 
 def test_review_workbench_removes_redundant_account_header():
@@ -41,3 +42,9 @@ def test_chat_and_review_modes_are_separate_and_long_answers_expand():
     assert 'responseMode="chat"' in JS
     assert '"review"' in JS
     assert "대화 더보기" in JS
+
+
+def test_streaming_stop_button_remains_clickable():
+    assert '.composer.busy #sendButton' in CHAT_CSS
+    assert 'pointer-events: auto' in CHAT_CSS
+    assert 'state.abort?.abort()' in JS

@@ -42,3 +42,20 @@
 .more-answer:hover {
   background: var(--teal-soft);
 }
+
+/* Keep the stop control interactive while an SSE response is streaming. */
+.composer.busy {
+  opacity: .72;
+  pointer-events: auto;
+}
+
+.composer.busy textarea,
+.composer.busy #chatAttach {
+  pointer-events: none;
+}
+
+.composer.busy #sendButton {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: pointer;
+}
