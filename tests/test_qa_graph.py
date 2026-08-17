@@ -5,14 +5,16 @@ from app.graphs.qa_graph import MAX_RETRIEVAL_COUNT, QADeps, run_qa, stream_qa
 
 
 class FakeLLM:
-    def __init__(self, responses):
+    def __init__(self, responses, stream_tokens=None):
         self.responses = iter(responses)
+        self.stream_tokens = stream_tokens or ["근거 ", "답변"]
 
     async def complete(self, messages, max_tokens=1024):
         return next(self.responses)
 
     async def stream(self, messages, max_tokens=1024):
-        yield "unused"
+        for token in self.stream_tokens:
+            yield token
 
 
 class FakeRetrieval:
@@ -66,8 +68,8 @@ def test_malformed_validator_output_requires_human_review():
 
 
 def test_stream_and_non_stream_use_same_graph_result():
-    responses = ["근거 답변", '{"approved":true,"issues":[],"missing_evidence_queries":[]}']
-    deps = QADeps(FakeLLM(responses), FakeRetrieval())
+    responses = ['{"approved":true,"issues":[],"missing_evidence_queries":[]}']
+    deps = QADeps(FakeLLM(responses, ["첫 ", "토큰 ", "응답"]), FakeRetrieval())
 
     async def collect():
         return [event async for event in stream_qa("질문", deps=deps)]
@@ -75,4 +77,8 @@ def test_stream_and_non_stream_use_same_graph_result():
     events = asyncio.run(collect())
     assert events[-1]["type"] == "done"
     assert events[-1]["result"]["workflow_status"] == "approved"
-    assert any(event["type"] == "token" for event in events)
+    token_events = [event for event in events if event["type"] == "token"]
+    assert [event["content"] for event in token_events] == ["첫 ", "토큰 ", "응답"]
+    assert all(event["replace"] is False for event in token_events)
+    validate_index = next(index for index, event in enumerate(events) if event.get("stage") == "validate")
+    assert events.index(token_events[0]) < validate_index

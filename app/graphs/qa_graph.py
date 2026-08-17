@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol, TypedDict
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from app.clients.colab_llm import ColabLLMClient
@@ -53,6 +54,7 @@ class QAState(TypedDict, total=False):
     workflow_status: str
     human_review_reason: str
     final_answer: str
+    stream_enabled: bool
 
 
 def default_dependencies() -> QADeps:
@@ -151,7 +153,15 @@ def build_graph(deps: QADeps | None = None):
         return result
 
     async def generate(state: QAState) -> dict[str, str]:
-        draft = await deps.llm.complete(_generator_messages(state), max_tokens=1200)
+        if state.get("stream_enabled"):
+            writer = get_stream_writer()
+            parts: list[str] = []
+            async for token in deps.llm.stream(_generator_messages(state), max_tokens=1200):
+                parts.append(token)
+                writer({"type": "token", "content": token, "replace": False})
+            draft = "".join(parts)
+        else:
+            draft = await deps.llm.complete(_generator_messages(state), max_tokens=1200)
         _event(state, "generator", "generator.draft_created", draft)
         return {"draft": draft, "revised_draft": draft}
 
@@ -232,8 +242,15 @@ def build_graph(deps: QADeps | None = None):
 qa_graph = build_graph()
 
 
-def _initial_state(question: str, attachment_context: str, case_id: str, conversation_id: str) -> QAState:
-    return {"question": question, "attachment_context": attachment_context, "case_id": case_id, "conversation_id": conversation_id, "revision_count": 0, "retrieval_count": 0, "validation_history": [], "workflow_status": WorkflowStatus.RUNNING}
+def _initial_state(
+    question: str,
+    attachment_context: str,
+    case_id: str,
+    conversation_id: str,
+    *,
+    stream_enabled: bool = False,
+) -> QAState:
+    return {"question": question, "attachment_context": attachment_context, "case_id": case_id, "conversation_id": conversation_id, "revision_count": 0, "retrieval_count": 0, "validation_history": [], "workflow_status": WorkflowStatus.RUNNING, "stream_enabled": stream_enabled}
 
 
 async def run_qa(question: str, attachment_context: str = "", case_id: str = "", conversation_id: str = "", *, deps: QADeps | None = None) -> QAState:
@@ -244,11 +261,14 @@ async def run_qa(question: str, attachment_context: str = "", case_id: str = "",
 async def stream_qa(question: str, attachment_context: str = "", case_id: str = "", conversation_id: str = "", *, deps: QADeps | None = None) -> AsyncIterator[dict[str, Any]]:
     """Emit graph node updates; graph remains the single orchestration source of truth."""
     graph = qa_graph if deps is None else build_graph(deps)
-    latest: QAState = _initial_state(question, attachment_context, case_id, conversation_id)
-    async for update in graph.astream(latest, stream_mode="updates"):
+    latest: QAState = _initial_state(question, attachment_context, case_id, conversation_id, stream_enabled=True)
+    async for mode, update in graph.astream(latest, stream_mode=["custom", "updates"]):
+        if mode == "custom":
+            yield update
+            continue
         for node, values in update.items():
             latest.update(values)
             yield {"type": "status", "stage": node, "content": f"{node} 단계 처리 중"}
-            if node in {"generate", "revise"} and values.get("revised_draft"):
+            if node == "revise" and values.get("revised_draft"):
                 yield {"type": "token", "content": values["revised_draft"], "replace": True}
     yield {"type": "done", "result": latest}
