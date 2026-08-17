@@ -104,6 +104,18 @@ CREATE TABLE IF NOT EXISTS documents (
     mime_type TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS document_chunk_metadata (
+    chunk_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    case_id TEXT,
+    filename TEXT NOT NULL,
+    page INTEGER,
+    section TEXT,
+    chunk_index INTEGER NOT NULL,
+    source_type TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    content_hash TEXT NOT NULL
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks USING fts5(
     document_id UNINDEXED,
     title,
@@ -132,6 +144,12 @@ CREATE TABLE IF NOT EXISTS agent_events (
     sources_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS case_access (
+    principal_id TEXT NOT NULL,
+    case_id TEXT NOT NULL REFERENCES review_cases(id),
+    role TEXT NOT NULL DEFAULT 'reviewer',
+    PRIMARY KEY(principal_id, case_id)
+);
 """
 
 
@@ -144,6 +162,12 @@ def initialize_database(seed: bool = True) -> None:
         _ensure_column(connection, "uploaded_files", "error_message", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "documents", "case_id", "TEXT")
         _ensure_column(connection, "documents", "knowledge_scope", "TEXT NOT NULL DEFAULT 'case'")
+        _ensure_column(connection, "documents", "status", "TEXT NOT NULL DEFAULT 'READY'")
+        _ensure_column(connection, "documents", "version", "INTEGER NOT NULL DEFAULT 1")
+        connection.execute(
+            """INSERT OR IGNORE INTO case_access(principal_id,case_id,role)
+            SELECT 'poc-user',id,'owner' FROM review_cases"""
+        )
         count = connection.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
         if seed and count == 0:
             _seed_financial_data(connection)
@@ -162,6 +186,10 @@ def create_case(title: str, company_name: str, review_type: str = "정기심사"
         connection.execute(
             "INSERT INTO review_cases VALUES (?,?,?,?,?,?,?,?,NULL)",
             (case_id, title, company_name, review_type, owner_name, "IN_PROGRESS", now, now),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO case_access(principal_id,case_id,role) VALUES ('poc-user',?,'owner')",
+            (case_id,),
         )
     return get_case(case_id) or {}
 
@@ -299,6 +327,23 @@ def save_uploaded_file(
     return file_id
 
 
+def update_uploaded_file(
+    file_id: str,
+    *,
+    status: str,
+    extracted_text: str | None = None,
+    error_message: str = "",
+) -> None:
+    assignments = ["status=?", "error_message=?"]
+    params: list[Any] = [status, error_message[:2_000]]
+    if extracted_text is not None:
+        assignments.append("extracted_text=?")
+        params.append(extracted_text)
+    params.append(file_id)
+    with connect() as connection:
+        connection.execute(f"UPDATE uploaded_files SET {','.join(assignments)} WHERE id=?", params)
+
+
 def list_case_documents(case_id: str) -> list[dict[str, Any]]:
     with connect() as connection:
         rows = connection.execute(
@@ -316,6 +361,7 @@ def delete_case_document(case_id: str, document_id: str) -> Path | None:
         if not row:
             return None
         connection.execute("DELETE FROM document_chunks WHERE document_id=?", (document_id,))
+        connection.execute("DELETE FROM document_chunk_metadata WHERE document_id=?", (document_id,))
         connection.execute("DELETE FROM documents WHERE id=?", (document_id,))
         connection.execute("DELETE FROM uploaded_files WHERE id=?", (document_id,))
     return Path(row[0])
@@ -449,9 +495,23 @@ def index_document(
             (document_id, case_id, knowledge_scope, title, str(source_path), mime_type, now),
         )
         connection.execute("DELETE FROM document_chunks WHERE document_id=?", (document_id,))
+        connection.execute("DELETE FROM document_chunk_metadata WHERE document_id=?", (document_id,))
         connection.executemany(
             "INSERT INTO document_chunks(document_id,title,content,source_path) VALUES (?,?,?,?)",
             [(document_id, title, chunk, str(source_path)) for chunk in chunks],
+        )
+        connection.executemany(
+            """INSERT INTO document_chunk_metadata
+            (chunk_id,document_id,case_id,filename,page,section,chunk_index,source_type,version,content_hash)
+            VALUES (?,?,?,?,NULL,NULL,?,?,1,?)""",
+            [
+                (
+                    f"{document_id}:{index}", document_id, case_id, title, index,
+                    "policy" if knowledge_scope == "common" else "case_document",
+                    __import__("hashlib").sha256(chunk.encode()).hexdigest(),
+                )
+                for index, chunk in enumerate(chunks)
+            ],
         )
     return len(chunks)
 
@@ -464,9 +524,11 @@ def search_documents(question: str, limit: int | None = None, case_id: str | Non
     with connect() as connection:
         rows = connection.execute(
             """SELECT ch.document_id,ch.title,ch.content,ch.source_path,bm25(document_chunks) score,
-            d.case_id,d.knowledge_scope
+            d.case_id,d.knowledge_scope,printf('%s:%d',ch.document_id,ch.rowid) chunk_id,
+            NULL chunk_index,NULL page,NULL section,d.version
             FROM document_chunks ch JOIN documents d ON d.id=ch.document_id
-            WHERE document_chunks MATCH ? AND (? IS NULL OR d.knowledge_scope='common' OR d.case_id=?)
+            WHERE document_chunks MATCH ? AND d.status='READY'
+            AND (? IS NULL OR d.knowledge_scope='common' OR d.case_id=?)
             ORDER BY score LIMIT ?""",
             (query, case_id, case_id, limit or settings.RAG_TOP_K),
         ).fetchall()

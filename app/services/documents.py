@@ -13,7 +13,8 @@ from openpyxl import load_workbook
 from pypdf import PdfReader
 
 from app.core.config import settings
-from app.database.poc_store import index_document, save_uploaded_file
+from app.database.poc_store import index_document, save_uploaded_file, update_uploaded_file
+from app.rag.indexer import VectorIndexer
 
 
 def safe_filename(filename: str) -> str:
@@ -29,11 +30,22 @@ def persist_and_index(
 ) -> tuple[Path, str, str]:
     stored = settings.UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_filename(filename)}"
     stored.write_bytes(raw)
-    text = extract_text(stored, mime_type, raw)
-    file_id = save_uploaded_file(conversation_id, filename, stored, mime_type, len(raw), text, case_id=case_id)
-    if text.strip():
-        index_document(file_id, filename, stored, mime_type, text, case_id=case_id)
-    return stored, text, file_id
+    file_id = save_uploaded_file(
+        conversation_id, filename, stored, mime_type, len(raw), "", case_id=case_id, status="UPLOADED"
+    )
+    try:
+        update_uploaded_file(file_id, status="PARSING")
+        text = extract_text(stored, mime_type, raw)
+        update_uploaded_file(file_id, status="CHUNKING", extracted_text=text)
+        if text.strip():
+            index_document(file_id, filename, stored, mime_type, text, case_id=case_id)
+            update_uploaded_file(file_id, status="EMBEDDING")
+            VectorIndexer().index(file_id, filename, text, case_id)
+        update_uploaded_file(file_id, status="READY")
+        return stored, text, file_id
+    except Exception as exc:
+        update_uploaded_file(file_id, status="FAILED", error_message=type(exc).__name__)
+        raise
 
 
 def extract_text(path: Path, mime_type: str | None = None, raw: bytes | None = None) -> str:

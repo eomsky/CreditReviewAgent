@@ -16,6 +16,7 @@ from app.database.poc_store import (
     list_case_documents,
 )
 from app.services.documents import persist_and_index
+from app.rag.indexer import VectorIndexer
 
 router = APIRouter()
 
@@ -54,6 +55,10 @@ def delete_document(case_id: str, document_id: str):
     if path is None:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
     Path(path).unlink(missing_ok=True)
+    try:
+        VectorIndexer().delete(document_id)
+    except Exception:
+        pass
 
 
 @router.get("/cases/{case_id}/events/stream")
