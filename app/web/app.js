@@ -54,11 +54,29 @@ function addMessage(role, content, metadata = {}) {
 async function sendMessage(text) {
   if (!state.activeCase || !text.trim() || state.busy) return;
   state.busy = true; $("#sendButton").disabled = true; addMessage("user", text.trim()); state.messages.push({ role: "user", content: text.trim() });
-  $("#messageInput").value = ""; const pending = addMessage("assistant", "자료 조회와 답변 검증을 진행하고 있습니다…"); pending.classList.add("loading");
+  $("#messageInput").value = ""; const pending = addMessage("assistant", "자료를 조회하고 있습니다…"); pending.classList.add("loading");
+  const contentNode = pending.querySelector(".message-content"); let streamedAnswer = "";
   try {
     const attachments = await Promise.all(state.files.map(fileToPayload));
-    const result = await api("/api/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: state.messages, attachments, conversation_id: state.conversationId, case_id: state.activeCase.id }) });
-    pending.remove(); state.conversationId = result.conversation_id; addMessage("assistant", result.message.content, result.metadata); state.messages.push(result.message); state.files = []; renderPendingFiles(); await Promise.all([loadDocuments(), loadEvents()]);
+    const response = await fetch("/api/v1/chat/completions/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: state.messages, attachments, conversation_id: state.conversationId, case_id: state.activeCase.id }) });
+    if (!response.ok || !response.body) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `요청 실패 (${response.status})`); }
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let finalEvent = null;
+    while (true) {
+      const { value, done } = await reader.read(); buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n"); buffer = done ? "" : lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue; const event = JSON.parse(line);
+        if (event.type === "meta") state.conversationId = event.conversation_id;
+        if (event.type === "status" && !streamedAnswer) contentNode.textContent = event.content;
+        if (event.type === "token") { streamedAnswer = event.replace ? event.content : streamedAnswer + event.content; contentNode.textContent = streamedAnswer; pending.classList.remove("loading"); $("#conversation").scrollTop = $("#conversation").scrollHeight; }
+        if (event.type === "done") finalEvent = event;
+        if (event.type === "error") throw new Error(event.detail);
+      }
+      if (done) break;
+    }
+    if (!finalEvent) throw new Error("스트림이 완료되기 전에 연결이 종료되었습니다.");
+    pending.remove(); addMessage("assistant", finalEvent.message, finalEvent.metadata); state.messages.push({ role: "assistant", content: finalEvent.message });
+    state.files = []; renderPendingFiles(); await Promise.all([loadDocuments(), loadEvents()]);
   } catch (error) { pending.remove(); addMessage("assistant", `연결 오류: ${error.message}`); }
   finally { state.busy = false; $("#sendButton").disabled = false; }
 }

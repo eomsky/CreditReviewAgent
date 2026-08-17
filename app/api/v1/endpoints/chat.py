@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import json
 import base64
 import binascii
 import logging
@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from app.clients.colab_llm import ColabLLMClient
 from app.core.config import settings
 from app.database.poc_store import ensure_conversation, ensure_default_case, save_message
-from app.graphs.qa_graph import run_qa
+from app.graphs.qa_graph import run_qa, stream_qa
 from app.services.documents import persist_and_index
 from app.services.guardrails import check_input
 
@@ -112,21 +112,32 @@ async def create_chat_completion(request: ChatRequest) -> ChatResponse:
 
 @router.post("/completions/stream")
 async def create_streaming_chat_completion(request: ChatRequest) -> StreamingResponse:
-    conversation_id, answer, metadata = await _answer(request)
-
     async def generate():
-        for start in range(0, len(answer), 18):
-            yield answer[start : start + 18]
-            await asyncio.sleep(0)
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/plain; charset=utf-8",
-        headers={
-            "X-Conversation-ID": conversation_id,
-            "X-Agent-Result": "verified" if metadata.get("validator_approved", True) else "revised",
-        },
-    )
+        try:
+            conversation_id, case_id, question, attachment_context = await _prepare_request(request)
+            yield json.dumps({"type": "meta", "conversation_id": conversation_id}, ensure_ascii=False) + "\n"
+            guardrail = check_input(question)
+            if not guardrail.allowed:
+                answer = guardrail.response or "해당 요청에는 답변할 수 없습니다."
+                metadata = {"guardrail": guardrail.category, "agent": "guardrail"}
+                save_message(conversation_id, "assistant", answer, metadata)
+                yield json.dumps({"type": "token", "content": answer}, ensure_ascii=False) + "\n"
+                yield json.dumps({"type": "done", "message": answer, "metadata": metadata}, ensure_ascii=False) + "\n"
+                return
+            async for event in stream_qa(question, attachment_context, case_id, conversation_id):
+                if event["type"] != "done":
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+                    continue
+                result = event["result"]
+                answer = result.get("final_answer", "")
+                metadata = {"agent": "generator_a_verified", "validator_approved": result.get("approved", True), "validator_issues": result.get("validation_issues", []), "sql": result.get("sql_used", ""), "sources": result.get("sources", [])}
+                save_message(conversation_id, "assistant", answer, metadata)
+                yield json.dumps({"type": "done", "message": answer, "metadata": metadata}, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            logger.exception("Streaming chat pipeline error")
+            detail = "Colab LLM이 요청을 처리하지 못했습니다." if isinstance(exc, httpx.HTTPStatusError) else "Colab LLM 또는 RAG 서비스에 연결할 수 없습니다."
+            yield json.dumps({"type": "error", "detail": detail}, ensure_ascii=False) + "\n"
+    return StreamingResponse(generate(), media_type="application/x-ndjson; charset=utf-8", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
 
 async def _process_attachments(conversation_id: str, case_id: str, attachments: list[ChatAttachment]) -> str:

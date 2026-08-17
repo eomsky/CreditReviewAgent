@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import AsyncIterator
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -176,3 +177,54 @@ async def run_qa(
             "conversation_id": conversation_id,
         }
     )
+
+async def stream_qa(
+    question: str,
+    attachment_context: str = "",
+    case_id: str = "",
+    conversation_id: str = "",
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream the first verified-workflow draft as vLLM produces tokens."""
+    state: QAState = {
+        "question": question,
+        "attachment_context": attachment_context,
+        "case_id": case_id,
+        "conversation_id": conversation_id,
+    }
+    state.update(await retrieve_context(state))
+    yield {"type": "status", "stage": "generate", "content": "답변을 생성하고 있습니다."}
+    prompt = f"""다음 근거만 사용해 한국어로 여신심사 답변을 작성하세요.
+확인되지 않은 사실은 단정하지 말고, 답변에 판단·근거·주요 위험요인·추가 확인사항을 구분하세요.
+
+[질문]\n{state['question']}
+[정형 DB]\n{state.get('sql_context', '')}
+[현재 심사건 및 공통 문서]\n{state.get('document_context', '')}
+[첨부자료]\n{state.get('attachment_context', '') or '없음'}
+"""
+    parts: list[str] = []
+    async for token in ColabLLMClient().stream(
+        [
+            {"role": "system", "content": "당신은 생성 에이전트입니다. 근거 중심의 여신심사 답변을 작성합니다."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=1200,
+    ):
+        parts.append(token)
+        yield {"type": "token", "content": token, "replace": False}
+    draft = "".join(parts)
+    state.update({"draft": draft, "revised_draft": draft})
+    _event(state, "generator", "generator.draft_created", draft)
+
+    while True:
+        yield {"type": "status", "stage": "validate", "content": "답변의 근거와 수치를 검증하고 있습니다."}
+        state.update(await validate_answer(state))
+        if state.get("approved") or state.get("revision_count", 0) >= MAX_REVISION_COUNT:
+            break
+        yield {"type": "status", "stage": "revise", "content": "검증 의견을 반영해 답변을 수정하고 있습니다."}
+        state.update(await revise_answer(state))
+
+    state.update(await finalize_answer(state))
+    final_answer = state.get("final_answer", "")
+    if final_answer != draft:
+        yield {"type": "token", "content": final_answer, "replace": True}
+    yield {"type": "done", "result": state}
