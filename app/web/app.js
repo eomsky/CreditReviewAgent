@@ -51,16 +51,22 @@ function addMessage(role, content, metadata = {}) {
   article.append(bubble); $("#conversation").append(article); $("#conversation").scrollTop = $("#conversation").scrollHeight; return article;
 }
 
+function setSendButton(sending, controller = null) {
+  const button = $("#sendButton"); state.currentAbortController = controller;
+  button.dataset.mode = sending ? "stop" : "send"; button.classList.toggle("stop", sending);
+  button.textContent = sending ? "■" : "➤ 전송"; button.setAttribute("aria-label", sending ? "답변 생성 중지" : "메시지 전송");
+}
+
 async function sendMessage(text) {
   if (!state.activeCase || !text.trim() || state.busy) return;
-  const requestId = crypto.randomUUID(); state.busyRequestId = requestId;
-  state.busy = true; $("#sendButton").disabled = true; addMessage("user", text.trim()); state.messages.push({ role: "user", content: text.trim() });
+  const requestId = crypto.randomUUID(); const controller = new AbortController(); state.busyRequestId = requestId;
+  state.busy = true; setSendButton(true, controller); addMessage("user", text.trim()); state.messages.push({ role: "user", content: text.trim() });
   $("#messageInput").value = ""; const pending = addMessage("assistant", "자료를 조회하고 있습니다…"); pending.classList.add("loading");
   const contentNode = pending.querySelector(".message-content"); let streamedAnswer = ""; let provisionalMessage = null;
-  const releaseForNextQuestion = () => { if (state.busyRequestId === requestId) { state.busy = false; state.busyRequestId = null; $("#sendButton").disabled = false; } };
+  const releaseForNextQuestion = () => { if (state.busyRequestId === requestId) { state.busy = false; state.busyRequestId = null; setSendButton(false); } };
   try {
     const attachments = await Promise.all(state.files.map(fileToPayload));
-    const response = await fetch("/api/v1/chat/completions/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: state.messages, attachments, conversation_id: state.conversationId, case_id: state.activeCase.id }) });
+    const response = await fetch("/api/v1/chat/completions/stream", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ messages: state.messages, attachments, conversation_id: state.conversationId, case_id: state.activeCase.id }) });
     if (!response.ok || !response.body) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `요청 실패 (${response.status})`); }
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let finalEvent = null;
     while (true) {
@@ -81,8 +87,11 @@ async function sendMessage(text) {
     if (provisionalMessage) { provisionalMessage.content = finalEvent.message; contentNode.textContent = finalEvent.message; pending.classList.remove("loading"); }
     else { pending.remove(); addMessage("assistant", finalEvent.message, finalEvent.metadata); state.messages.push({ role: "assistant", content: finalEvent.message }); }
     state.files = []; renderPendingFiles(); await Promise.all([loadDocuments(), loadEvents()]);
-  } catch (error) { if (!provisionalMessage) { pending.remove(); addMessage("assistant", `연결 오류: ${error.message}`); } else { pending.classList.remove("loading"); } }
-  finally { releaseForNextQuestion(); }
+  } catch (error) {
+    if (error.name === "AbortError") { pending.classList.remove("loading"); if (streamedAnswer) { contentNode.textContent = streamedAnswer; if (!provisionalMessage) state.messages.push({ role: "assistant", content: streamedAnswer }); } else pending.remove(); }
+    else if (!provisionalMessage) { pending.remove(); addMessage("assistant", `연결 오류: ${error.message}`); }
+    else pending.classList.remove("loading");
+  } finally { releaseForNextQuestion(); }
 }
 async function loadDocuments() {
   if (!state.activeCase) return; const data = await api(`/api/v1/cases/${state.activeCase.id}/documents`); const list = $("#documentList"); list.replaceChildren(); $("#documentCount").textContent = data.items.length;
@@ -111,7 +120,7 @@ function startEventStream() {
 function fileToPayload(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ filename: file.name, mime_type: file.type || "application/octet-stream", data_base64: String(reader.result).split(",", 2)[1] }); reader.onerror = reject; reader.readAsDataURL(file); }); }
 function renderPendingFiles() { $("#pendingFiles").replaceChildren(...state.files.map((file) => el("span", "file-chip", `▧ ${file.name}`))); }
 
-$("#chatForm").addEventListener("submit", (event) => { event.preventDefault(); sendMessage($("#messageInput").value); });
+$("#chatForm").addEventListener("submit", (event) => { event.preventDefault(); if ($("#sendButton").dataset.mode === "stop") { state.currentAbortController?.abort(); return; } sendMessage($("#messageInput").value); });
 $("#messageInput").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#chatForm").requestSubmit(); } });
 $("#chatAttach").addEventListener("click", () => $("#chatFile").click());
 $("#chatFile").addEventListener("change", () => { state.files = [...$("#chatFile").files]; renderPendingFiles(); });
