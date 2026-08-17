@@ -1,0 +1,44 @@
+.chat-panel {
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+}
+
+.conversation {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.conversation article,
+.conversation article > div,
+.conversation p {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.conversation article > div {
+  overflow: visible;
+}
+
+.conversation p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.more-answer {
+  display: block;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border: 1px solid #bad3cd;
+  border-radius: 8px;
+  background: #f5faf8;
+  color: var(--teal-dark);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.more-answer:hover {
+  background: var(--teal-soft);
+}

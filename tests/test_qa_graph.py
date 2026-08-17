@@ -2,6 +2,7 @@ import asyncio
 
 from app.domain.evidence import Evidence, EvidenceSourceType
 from app.graphs.qa_graph import MAX_RETRIEVAL_COUNT, QADeps, run_qa, stream_qa
+from app.graphs.qa_graph import _generator_messages
 
 
 class FakeLLM:
@@ -82,3 +83,13 @@ def test_stream_and_non_stream_use_same_graph_result():
     assert all(event["replace"] is False for event in token_events)
     validate_index = next(index for index, event in enumerate(events) if event.get("stage") == "validate")
     assert events.index(token_events[0]) < validate_index
+
+
+def test_chat_mode_is_concise_while_review_mode_remains_structured():
+    base = {"question": "신청금액만 알려줘", "evidence_context": "신청금액 50억원"}
+    chat_prompt = _generator_messages({**base, "response_mode": "chat"})[-1]["content"]
+    review_prompt = _generator_messages({**base, "response_mode": "review"})[-1]["content"]
+    assert "1~3문장" in chat_prompt
+    assert "고정 양식을 강제하지 마세요" in chat_prompt
+    assert "공식 심사의견 작성 요청" in review_prompt
+    assert "상환능력" in review_prompt

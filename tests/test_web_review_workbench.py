@@ -35,3 +35,9 @@ def test_data_explorer_is_sortable_and_read_only():
     assert 'data-sort="status"' in HTML
     assert "READ ONLY" in JS
     assert "SELECT * FROM" in JS
+
+
+def test_chat_and_review_modes_are_separate_and_long_answers_expand():
+    assert 'responseMode="chat"' in JS
+    assert '"review"' in JS
+    assert "대화 더보기" in JS

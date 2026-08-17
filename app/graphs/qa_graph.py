@@ -55,6 +55,7 @@ class QAState(TypedDict, total=False):
     human_review_reason: str
     final_answer: str
     stream_enabled: bool
+    response_mode: str
 
 
 def default_dependencies() -> QADeps:
@@ -84,10 +85,17 @@ def _generator_messages(state: QAState, *, revision: bool = False) -> list[dict[
 - 유도성 질문보다 객관적 근거를 우선하세요.
 - 중요한 출처 충돌은 숨기지 말고 담당자 확인 필요로 표시하세요.
 - 각 핵심 주장 뒤에 가능한 경우 [evidence_id]를 표시하세요."""
+    if state.get("response_mode") == "review":
+        output_requirements = """공식 심사의견 작성 요청입니다. 판단, 근거, 위험요인, 완화요인과 추가 확인사항을 빠짐없이 고려하세요.
+사용자가 요청한 목차를 우선하되 상환능력, 핵심 위험 및 보완조건, 종합의견을 포함해 충분히 구조화하세요."""
+    else:
+        output_requirements = """대화형 질문입니다. 질문에 직접 답하고 필요한 근거만 덧붙이세요.
+단순 사실·수치·여부 질문은 1~3문장으로 짧게 답하세요. 분석이나 비교가 필요한 경우에만 간결한 항목을 사용하세요.
+사용자가 상세 검토를 명시적으로 요청하지 않았다면 판단·근거·위험요인·완화요인 등의 고정 양식을 강제하지 마세요."""
     body = f"""[QUESTION]\n{state['question']}
 [EVIDENCE]\n{state.get('evidence_context', '')}
 [OUTPUT REQUIREMENTS]
-판단, 근거, 위험요인, 완화요인, 추가 확인사항을 구분하고 근거→분석→결론 순서로 한국어 답변을 작성하세요."""
+{output_requirements}"""
     if revision:
         body += f"""\n[CURRENT ANSWER]\n{state.get('revised_draft') or state.get('draft', '')}
 [VALIDATION ISSUES]\n{json.dumps(state.get('validation_issues', []), ensure_ascii=False)}
@@ -153,20 +161,22 @@ def build_graph(deps: QADeps | None = None):
         return result
 
     async def generate(state: QAState) -> dict[str, str]:
+        max_tokens = 1200 if state.get("response_mode") == "review" else 500
         if state.get("stream_enabled"):
             writer = get_stream_writer()
             parts: list[str] = []
-            async for token in deps.llm.stream(_generator_messages(state), max_tokens=1200):
+            async for token in deps.llm.stream(_generator_messages(state), max_tokens=max_tokens):
                 parts.append(token)
                 writer({"type": "token", "content": token, "replace": False})
             draft = "".join(parts)
         else:
-            draft = await deps.llm.complete(_generator_messages(state), max_tokens=1200)
+            draft = await deps.llm.complete(_generator_messages(state), max_tokens=max_tokens)
         _event(state, "generator", "generator.draft_created", draft)
         return {"draft": draft, "revised_draft": draft}
 
     async def revise(state: QAState) -> dict[str, Any]:
-        revised = await deps.llm.complete(_generator_messages(state, revision=True), max_tokens=1300)
+        max_tokens = 1300 if state.get("response_mode") == "review" else 600
+        revised = await deps.llm.complete(_generator_messages(state, revision=True), max_tokens=max_tokens)
         count = state.get("revision_count", 0) + 1
         _event(state, "generator", "generator.revision_created", revised)
         return {"revised_draft": revised, "revision_count": count}
@@ -249,19 +259,20 @@ def _initial_state(
     conversation_id: str,
     *,
     stream_enabled: bool = False,
+    response_mode: str = "chat",
 ) -> QAState:
-    return {"question": question, "attachment_context": attachment_context, "case_id": case_id, "conversation_id": conversation_id, "revision_count": 0, "retrieval_count": 0, "validation_history": [], "workflow_status": WorkflowStatus.RUNNING, "stream_enabled": stream_enabled}
+    return {"question": question, "attachment_context": attachment_context, "case_id": case_id, "conversation_id": conversation_id, "revision_count": 0, "retrieval_count": 0, "validation_history": [], "workflow_status": WorkflowStatus.RUNNING, "stream_enabled": stream_enabled, "response_mode": response_mode}
 
 
-async def run_qa(question: str, attachment_context: str = "", case_id: str = "", conversation_id: str = "", *, deps: QADeps | None = None) -> QAState:
+async def run_qa(question: str, attachment_context: str = "", case_id: str = "", conversation_id: str = "", *, deps: QADeps | None = None, response_mode: str = "chat") -> QAState:
     graph = qa_graph if deps is None else build_graph(deps)
-    return await graph.ainvoke(_initial_state(question, attachment_context, case_id, conversation_id))
+    return await graph.ainvoke(_initial_state(question, attachment_context, case_id, conversation_id, response_mode=response_mode))
 
 
-async def stream_qa(question: str, attachment_context: str = "", case_id: str = "", conversation_id: str = "", *, deps: QADeps | None = None) -> AsyncIterator[dict[str, Any]]:
+async def stream_qa(question: str, attachment_context: str = "", case_id: str = "", conversation_id: str = "", *, deps: QADeps | None = None, response_mode: str = "chat") -> AsyncIterator[dict[str, Any]]:
     """Emit graph node updates; graph remains the single orchestration source of truth."""
     graph = qa_graph if deps is None else build_graph(deps)
-    latest: QAState = _initial_state(question, attachment_context, case_id, conversation_id, stream_enabled=True)
+    latest: QAState = _initial_state(question, attachment_context, case_id, conversation_id, stream_enabled=True, response_mode=response_mode)
     async for mode, update in graph.astream(latest, stream_mode=["custom", "updates"]):
         if mode == "custom":
             yield update

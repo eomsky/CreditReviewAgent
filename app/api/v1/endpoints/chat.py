@@ -47,6 +47,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=64)
     case_id: str | None = Field(default=None, max_length=64)
     current_review: str = Field(default="", max_length=12000)
+    response_mode: str = Field(default="chat", pattern="^(chat|review)$")
 
 
 class ChatResponse(BaseModel):
@@ -84,7 +85,7 @@ async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:
         return conversation_id, answer, metadata
 
     try:
-        result = await run_qa(question, attachment_context, case_id, conversation_id)
+        result = await run_qa(question, attachment_context, case_id, conversation_id, response_mode=request.response_mode)
     except httpx.HTTPStatusError as exc:
         response_text = exc.response.text[:2_000]
         logger.exception("Colab LLM HTTP error %s: %s", exc.response.status_code, response_text)
@@ -139,7 +140,10 @@ async def create_streaming_chat_completion(request: ChatRequest) -> StreamingRes
                 yield _sse({"type": "token", "content": answer})
                 yield _sse({"type": "done", "message": answer, "metadata": metadata})
                 return
-            async for event in stream_qa(question, attachment_context, case_id, conversation_id):
+            async for event in stream_qa(
+                question, attachment_context, case_id, conversation_id,
+                response_mode=request.response_mode,
+            ):
                 if event["type"] != "done":
                     yield _sse(event)
                     continue
