@@ -63,7 +63,7 @@ async def retrieve_context(state: QAState) -> dict[str, Any]:
 
 async def generate_answer(state: QAState) -> dict[str, str]:
     prompt = f"""다음 근거만 사용해 한국어로 여신심사 답변을 작성하세요.
-확인되지 않은 사실은 단정하지 말고, 답변에 판단·근거·주요 위험요인·추가 확인사항을 구분하세요.
+확인되지 않은 사실은 단정하지 말고, 답변에 판단·근거·주요 위험요인·추가 확인사항을 구분하세요. 질문이 현재 심사의견을 지칭하면 [현재 화면의 심사의견]을 최우선 근거로 사용하세요.
 
 [질문]\n{state['question']}
 [정형 DB]\n{state.get('sql_context', '')}
@@ -85,7 +85,7 @@ async def revise_answer(state: QAState) -> dict[str, Any]:
     revision_count = state.get("revision_count", 0) + 1
     prompt = f"""검증 이슈를 모두 해결하도록 여신심사 답변을 수정하세요. 근거 밖의 내용을 추가하지 마세요.
 [질문]\n{state['question']}
-[근거]\n{state.get('sql_context', '')}\n{state.get('document_context', '')}
+[근거]\n{state.get('sql_context', '')}\n{state.get('document_context', '')}\n{state.get('attachment_context', '')}
 [현재 답변]\n{state.get('revised_draft') or state.get('draft', '')}
 [검증 이슈]\n{json.dumps(state.get('validation_issues', []), ensure_ascii=False)}
 """
@@ -194,7 +194,7 @@ async def stream_qa(
     state.update(await retrieve_context(state))
     yield {"type": "status", "stage": "generate", "content": "답변을 생성하고 있습니다."}
     prompt = f"""다음 근거만 사용해 한국어로 여신심사 답변을 작성하세요.
-확인되지 않은 사실은 단정하지 말고, 답변에 판단·근거·주요 위험요인·추가 확인사항을 구분하세요.
+확인되지 않은 사실은 단정하지 말고, 답변에 판단·근거·주요 위험요인·추가 확인사항을 구분하세요. 질문이 현재 심사의견을 지칭하면 [현재 화면의 심사의견]을 최우선 근거로 사용하세요.
 
 [질문]\n{state['question']}
 [정형 DB]\n{state.get('sql_context', '')}

@@ -41,6 +41,7 @@ class ChatRequest(BaseModel):
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=10)
     conversation_id: str | None = Field(default=None, max_length=64)
     case_id: str | None = Field(default=None, max_length=64)
+    current_review: str = Field(default="", max_length=12000)
 
 
 class ChatResponse(BaseModel):
@@ -62,6 +63,9 @@ async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:
     conversation_id = ensure_conversation(request.conversation_id, case_id)
     save_message(conversation_id, "user", question)
     attachment_context = await _process_attachments(conversation_id, case_id, request.attachments)
+    if request.current_review.strip():
+        review_context = f"[현재 화면의 심사의견]\n{request.current_review.strip()}"
+        attachment_context = f"{review_context}\n\n{attachment_context}".strip()
     return conversation_id, case_id, question, attachment_context
 
 
