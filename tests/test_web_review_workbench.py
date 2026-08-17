@@ -11,7 +11,10 @@ def test_review_workbench_removes_redundant_account_header():
     assert "loan-context" not in HTML
     assert "여신신청번호" not in HTML
     assert 'id="dataStatusButton"' in HTML
-    assert "AI 심사 대화" in HTML
+    assert "에이전트 심사의견" in HTML
+    assert "CREDIT REVIEW" not in HTML
+    assert "AI 심사 대화" not in HTML
+    assert "추가 정보나 검토 방향을 말씀해 주세요." in HTML
 
 
 def test_opinion_confirmation_stream_and_versions_exist():
@@ -48,3 +51,14 @@ def test_streaming_stop_button_remains_clickable():
     assert '.composer.busy #sendButton' in CHAT_CSS
     assert 'pointer-events: auto' in CHAT_CSS
     assert 'state.abort?.abort()' in JS
+
+
+def test_sentence_level_evidence_popover_and_source_viewer_exist():
+    assert 'id="citationPopover"' in HTML
+    assert 'id="sourceViewerDialog"' in HTML
+    assert "evidence-claim" in JS
+    assert "data-open-evidence" in JS
+    assert "openSourceViewer" in JS
+    assert "moveEvidence" in JS
+    assert "evidence-highlight" in CHAT_CSS
+    assert "table-evidence-view" in CHAT_CSS

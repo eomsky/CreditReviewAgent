@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>기업여신 AI 심사지원</title>
-  <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/chat-fixes.css">
+  <link rel="stylesheet" href="/static/styles.css?v=evidence-2">
+  <link rel="stylesheet" href="/static/chat-fixes.css?v=evidence-2">
 </head>
 <body>
 <main class="app-shell">
@@ -13,9 +13,7 @@
     <article class="opinion-panel" aria-label="심사의견">
       <header class="opinion-head">
         <div>
-          <span class="eyebrow">CREDIT REVIEW</span>
-          <h1>심사의견</h1>
-          <p id="opinionUpdated">정보계 자료와 현재 대화를 반영한 초기 의견</p>
+          <h1>에이전트 심사의견</h1>
         </div>
         <div class="opinion-actions">
           <nav class="version-nav" aria-label="심사의견 버전">
@@ -33,17 +31,16 @@
       <section id="opinionContent" class="opinion" aria-live="polite"></section>
     </article>
 
-    <aside class="chat-panel" aria-label="AI 심사 대화">
+    <aside class="chat-panel" aria-label="심사 지원 대화창">
       <header class="chat-head">
-        <div><h2>AI 심사 대화</h2><p><i></i> 심사 에이전트 연결됨</p></div>
+        <div><p><i></i> 대화 진행 중</p></div>
         <button id="dataStatusButton" type="button">입력 데이터 현황 <span id="dataCountBadge">12</span></button>
       </header>
       <section id="conversation" class="conversation" aria-live="polite">
-        <article class="assistant"><span class="avatar">AI</span><div><p>정보계 자료와 초기 심사의견을 확인했습니다. 추가 정보나 검토 방향을 말씀해 주세요.</p></div></article>
+        <article class="assistant"><span class="avatar">AI</span><div><p>추가 정보나 검토 방향을 말씀해 주세요.</p></div></article>
       </section>
       <div id="pendingFiles" class="pending-files"></div>
       <div class="apply-row">
-        <span id="applyHint">대화 내용은 확인 후 심사의견에 반영됩니다.</span>
         <button id="updateOpinion" type="button">현재까지 내용 반영</button>
       </div>
       <form id="chatForm" class="composer">
@@ -79,6 +76,22 @@
   </section>
 </dialog>
 
-<script src="/static/app.js?v=review-workbench-1" defer></script>
+<aside id="citationPopover" class="citation-popover hidden" role="tooltip"></aside>
+
+<dialog id="sourceViewerDialog" class="source-viewer-dialog">
+  <section class="source-viewer">
+    <header>
+      <div><div class="viewer-title-row"><h2 id="viewerTitle"></h2><span>근거 원문</span></div><p id="viewerMeta"></p></div>
+      <button id="closeSourceViewer" type="button" aria-label="닫기">×</button>
+    </header>
+    <main id="viewerBody"></main>
+    <footer>
+      <p>심사의견 문장과 연결된 원문 위치입니다.</p>
+      <div><button id="previousEvidence" type="button">이전 근거</button><button id="nextEvidence" type="button">다음 근거</button><button id="viewerCloseButton" type="button" class="primary">닫기</button></div>
+    </footer>
+  </section>
+</dialog>
+
+<script src="/static/app.js?v=evidence-2" defer></script>
 </body>
 </html>
