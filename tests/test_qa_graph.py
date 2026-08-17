@@ -33,7 +33,7 @@ class FakeRetrieval:
 
 def run_with(responses):
     retrieval = FakeRetrieval()
-    result = asyncio.run(run_qa("부채비율을 검토해줘", deps=QADeps(FakeLLM(responses), retrieval)))
+    result = asyncio.run(run_qa("부채비율을 검토해줘", deps=QADeps(FakeLLM(responses), retrieval), response_mode="review"))
     return result, retrieval
 
 
@@ -73,7 +73,7 @@ def test_stream_and_non_stream_use_same_graph_result():
     deps = QADeps(FakeLLM(responses, ["첫 ", "토큰 ", "응답"]), FakeRetrieval())
 
     async def collect():
-        return [event async for event in stream_qa("질문", deps=deps)]
+        return [event async for event in stream_qa("질문", deps=deps, response_mode="review")]
 
     events = asyncio.run(collect())
     assert events[-1]["type"] == "done"
@@ -89,7 +89,16 @@ def test_chat_mode_is_concise_while_review_mode_remains_structured():
     base = {"question": "신청금액만 알려줘", "evidence_context": "신청금액 50억원"}
     chat_prompt = _generator_messages({**base, "response_mode": "chat"})[-1]["content"]
     review_prompt = _generator_messages({**base, "response_mode": "review"})[-1]["content"]
-    assert "1~3문장" in chat_prompt
-    assert "고정 양식을 강제하지 마세요" in chat_prompt
+    assert "일반 대화" in chat_prompt
+    assert "가장 적합한 방식을 스스로 선택" in chat_prompt
     assert "공식 심사의견 작성 요청" in review_prompt
     assert "상환능력" in review_prompt
+
+
+def test_chat_mode_skips_validator_entirely():
+    deps = QADeps(FakeLLM(["자연스러운 대화 답변"]), FakeRetrieval())
+    result = asyncio.run(run_qa("신청금액이 얼마야?", deps=deps, response_mode="chat"))
+    assert result["final_answer"] == "자연스러운 대화 답변"
+    assert result["workflow_status"] == "approved"
+    assert result.get("validation_history") == []
+    assert "approved" not in result

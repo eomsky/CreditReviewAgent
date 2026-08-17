@@ -89,9 +89,8 @@ def _generator_messages(state: QAState, *, revision: bool = False) -> list[dict[
         output_requirements = """공식 심사의견 작성 요청입니다. 판단, 근거, 위험요인, 완화요인과 추가 확인사항을 빠짐없이 고려하세요.
 사용자가 요청한 목차를 우선하되 상환능력, 핵심 위험 및 보완조건, 종합의견을 포함해 충분히 구조화하세요."""
     else:
-        output_requirements = """대화형 질문입니다. 질문에 직접 답하고 필요한 근거만 덧붙이세요.
-단순 사실·수치·여부 질문은 1~3문장으로 짧게 답하세요. 분석이나 비교가 필요한 경우에만 간결한 항목을 사용하세요.
-사용자가 상세 검토를 명시적으로 요청하지 않았다면 판단·근거·위험요인·완화요인 등의 고정 양식을 강제하지 마세요."""
+        output_requirements = """우측 대화창의 일반 대화입니다.
+질문의 의도와 맥락에 맞춰 자연스럽게 답하세요. 답변의 길이와 표현 형식은 질문에 가장 적합한 방식을 스스로 선택하세요."""
     body = f"""[QUESTION]\n{state['question']}
 [EVIDENCE]\n{state.get('evidence_context', '')}
 [OUTPUT REQUIREMENTS]
@@ -229,7 +228,9 @@ def build_graph(deps: QADeps | None = None):
     async def finalize(state: QAState) -> dict[str, str]:
         answer = state.get("revised_draft") or state.get("draft", "")
         status = state.get("workflow_status")
-        if not status or status == WorkflowStatus.RUNNING:
+        if state.get("response_mode") == "chat":
+            status = WorkflowStatus.APPROVED
+        elif not status or status == WorkflowStatus.RUNNING:
             status = WorkflowStatus.APPROVED if state.get("approved") else WorkflowStatus.NEEDS_HUMAN_REVIEW
         if status == WorkflowStatus.NEEDS_HUMAN_REVIEW:
             answer += f"\n\n※ 담당자 추가 확인 필요: {state.get('human_review_reason') or '검증 한도 초과'}"
@@ -241,7 +242,11 @@ def build_graph(deps: QADeps | None = None):
         workflow.add_node(name, node)
     workflow.add_edge(START, "retrieve")
     workflow.add_edge("retrieve", "generate")
-    workflow.add_edge("generate", "validate")
+    workflow.add_conditional_edges(
+        "generate",
+        lambda state: "finalize" if state.get("response_mode") == "chat" else "validate",
+        {"finalize": "finalize", "validate": "validate"},
+    )
     workflow.add_conditional_edges("validate", route, {"retrieve": "retrieve", "revise": "revise", "human": "human", "finalize": "finalize"})
     workflow.add_edge("revise", "validate")
     workflow.add_edge("human", "finalize")

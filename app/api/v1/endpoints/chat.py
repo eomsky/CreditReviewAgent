@@ -100,8 +100,8 @@ async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:
 
     answer = result.get("final_answer", "")
     metadata = {
-        "agent": "validator_b" if not result.get("approved", True) else "generator_a_verified",
-        "validator_approved": result.get("approved", True),
+        "agent": ("validator_b" if not result.get("approved", True) else "generator_a_verified") if request.response_mode == "review" else "generator_a",
+        "validator_approved": result.get("approved", True) if request.response_mode == "review" else None,
         "validator_issues": result.get("validation_issues", []),
         "sql": result.get("sql_used", ""),
         "sources": result.get("sources", []),
@@ -149,7 +149,7 @@ async def create_streaming_chat_completion(request: ChatRequest) -> StreamingRes
                     continue
                 result = event["result"]
                 answer = result.get("final_answer", "")
-                metadata = {"agent": "generator_a_verified", "validator_approved": result.get("approved", True), "validator_issues": result.get("validation_issues", []), "issue_types": result.get("issue_types", []), "sql": result.get("sql_used", ""), "sources": result.get("sources", []), "workflow_status": result.get("workflow_status", "approved"), "human_review_required": result.get("workflow_status") == "needs_human_review", "human_review_reason": result.get("human_review_reason", ""), "revision_count": result.get("revision_count", 0), "retrieval_count": result.get("retrieval_count", 0)}
+                metadata = {"agent": "generator_a_verified" if request.response_mode == "review" else "generator_a", "validator_approved": result.get("approved", True) if request.response_mode == "review" else None, "validator_issues": result.get("validation_issues", []) if request.response_mode == "review" else [], "issue_types": result.get("issue_types", []) if request.response_mode == "review" else [], "sql": result.get("sql_used", ""), "sources": result.get("sources", []), "workflow_status": result.get("workflow_status", "approved"), "human_review_required": result.get("workflow_status") == "needs_human_review", "human_review_reason": result.get("human_review_reason", ""), "revision_count": result.get("revision_count", 0), "retrieval_count": result.get("retrieval_count", 0)}
                 save_message(conversation_id, "assistant", answer, metadata)
                 yield _sse({"type": "done", "message": answer, "metadata": metadata})
         except Exception as exc:
