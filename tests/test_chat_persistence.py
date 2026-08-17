@@ -3,9 +3,16 @@ import asyncio
 
 import pytest
 
-from app.api.v1.endpoints.chat import ChatMessage, ChatRequest, _answer
+from app.api.v1.endpoints.chat import ChatMessage, ChatRequest, _answer, _sse
 from app.core.config import settings
 from app.database.poc_store import connect, initialize_database
+
+
+def test_sse_encoder_creates_flushable_event_frame():
+    frame = _sse({"type": "token", "content": "첫 토큰"})
+    assert frame.startswith("data: ")
+    assert frame.endswith("\n\n")
+    assert '"content": "첫 토큰"' in frame
 
 
 def test_guardrail_question_and_answer_are_persisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

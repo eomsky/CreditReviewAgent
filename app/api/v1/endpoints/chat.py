@@ -25,6 +25,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _sse(event: dict[str, Any]) -> str:
+    """Encode one event as SSE so reverse proxies flush it immediately."""
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
 class ChatMessage(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
     content: str = Field(min_length=1, max_length=50_000)
@@ -125,29 +130,37 @@ async def create_streaming_chat_completion(request: ChatRequest) -> StreamingRes
     async def generate():
         try:
             conversation_id, case_id, question, attachment_context = await _prepare_request(request)
-            yield json.dumps({"type": "meta", "conversation_id": conversation_id}, ensure_ascii=False) + "\n"
+            yield _sse({"type": "meta", "conversation_id": conversation_id})
             guardrail = check_input(question)
             if not guardrail.allowed:
                 answer = guardrail.response or "해당 요청에는 답변할 수 없습니다."
                 metadata = {"guardrail": guardrail.category, "agent": "guardrail"}
                 save_message(conversation_id, "assistant", answer, metadata)
-                yield json.dumps({"type": "token", "content": answer}, ensure_ascii=False) + "\n"
-                yield json.dumps({"type": "done", "message": answer, "metadata": metadata}, ensure_ascii=False) + "\n"
+                yield _sse({"type": "token", "content": answer})
+                yield _sse({"type": "done", "message": answer, "metadata": metadata})
                 return
             async for event in stream_qa(question, attachment_context, case_id, conversation_id):
                 if event["type"] != "done":
-                    yield json.dumps(event, ensure_ascii=False) + "\n"
+                    yield _sse(event)
                     continue
                 result = event["result"]
                 answer = result.get("final_answer", "")
                 metadata = {"agent": "generator_a_verified", "validator_approved": result.get("approved", True), "validator_issues": result.get("validation_issues", []), "issue_types": result.get("issue_types", []), "sql": result.get("sql_used", ""), "sources": result.get("sources", []), "workflow_status": result.get("workflow_status", "approved"), "human_review_required": result.get("workflow_status") == "needs_human_review", "human_review_reason": result.get("human_review_reason", ""), "revision_count": result.get("revision_count", 0), "retrieval_count": result.get("retrieval_count", 0)}
                 save_message(conversation_id, "assistant", answer, metadata)
-                yield json.dumps({"type": "done", "message": answer, "metadata": metadata}, ensure_ascii=False) + "\n"
+                yield _sse({"type": "done", "message": answer, "metadata": metadata})
         except Exception as exc:
             logger.exception("Streaming chat pipeline error")
             detail = "Colab LLM이 요청을 처리하지 못했습니다." if isinstance(exc, httpx.HTTPStatusError) else "Colab LLM 또는 RAG 서비스에 연결할 수 없습니다."
-            yield json.dumps({"type": "error", "detail": detail}, ensure_ascii=False) + "\n"
-    return StreamingResponse(generate(), media_type="application/x-ndjson; charset=utf-8", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
+            yield _sse({"type": "error", "detail": detail})
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Content-Encoding": "identity",
+        },
+    )
 
 
 async def _process_attachments(conversation_id: str, case_id: str, attachments: list[ChatAttachment]) -> str:
