@@ -46,7 +46,8 @@ def test_catalog_tracks_live_tables_and_document_additions_and_removals(
 
     increased = build_data_catalog(case_id)
     assert increased["count"] == initial["count"] + 1
-    assert any(item["name"] == "추가 심사자료.pdf" for item in increased["items"])
+    document = next(item for item in increased["items"] if item["name"] == "추가 심사자료.pdf")
+    assert document["source_url"] == f"/api/v1/poc/files/{document_id}?case_id={case_id}"
 
     with connect() as connection:
         connection.execute("DELETE FROM document_chunks WHERE document_id=?", (document_id,))

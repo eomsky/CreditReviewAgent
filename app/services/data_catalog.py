@@ -57,6 +57,7 @@ def build_data_catalog(case_id: str) -> dict[str, Any]:
                 "body": (row["summary"] or "")[:1_200],
                 "row_count": row["chunk_count"],
                 "source_key": f"document:{row['id']}",
+                "source_url": f"/api/v1/poc/files/{row['id']}?case_id={case_id}",
                 "knowledge_scope": row["knowledge_scope"],
                 "created_at": row["created_at"],
             })
@@ -79,6 +80,7 @@ def build_data_catalog(case_id: str) -> dict[str, Any]:
                 "body": row["error_message"] or "업로드 후 색인 처리 중인 자료입니다.",
                 "size_bytes": row["size_bytes"],
                 "source_key": f"upload:{row['id']}",
+                "source_url": f"/api/v1/poc/files/{row['id']}?case_id={case_id}",
                 "created_at": row["created_at"],
             })
 

@@ -99,3 +99,13 @@ def test_chat_answers_render_safe_markdown_structure():
     assert "chat-heading" in JS
     assert "chat-list" in JS
     assert "renderChatMarkdown(text)" in JS
+
+
+def test_attachment_only_submission_and_actual_pdf_preview_are_supported():
+    assert "!text&&!hasAttachments" in JS
+    assert "첨부한 파일을 분석하고 여신심사에 참고할 핵심 내용을 알려줘." in JS
+    assert "sourceFileUrl" in JS
+    assert "actual-document-preview" in JS
+    assert "<iframe" in JS
+    assert "payload.detail" in JS
+    assert "기업 현황 및 검토 결과" not in JS

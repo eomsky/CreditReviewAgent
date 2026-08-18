@@ -3,3 +3,5 @@
 .opinion-section h4{margin:14px 0 6px;color:#285047;font-size:15px}.opinion-section ul,.opinion-section ol{margin:7px 0 12px;padding-left:23px;color:#354641}.opinion-section li{margin:4px 0;line-height:1.75}.opinion-section p+p{margin-top:8px}
 
 .conversation .chat-heading{display:inline-block;margin:5px 0 2px;font-weight:800;color:#183b34}.conversation .chat-list{display:inline-block;padding-left:4px}.conversation code{padding:1px 5px;border-radius:4px;background:#eef3f1;color:#07594f;font:12px ui-monospace,monospace}.conversation strong{font-weight:800;color:#183b34}
+
+.actual-document-preview{height:min(72vh,900px);min-height:560px;background:#e9efed;border:1px solid #d5e0dc;border-radius:10px;overflow:hidden}.actual-document-preview iframe{display:block;width:100%;height:100%;border:0;background:white}
