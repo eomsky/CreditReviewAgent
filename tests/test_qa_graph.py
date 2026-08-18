@@ -102,3 +102,13 @@ def test_chat_mode_skips_validator_entirely():
     assert result["workflow_status"] == "approved"
     assert result.get("validation_history") == []
     assert "approved" not in result
+
+
+def test_review_prompt_requires_complete_markdown_sections():
+    prompt = _generator_messages({
+        "question": "심사의견을 갱신해줘",
+        "evidence_context": "근거",
+        "response_mode": "review",
+    })[-1]["content"]
+    assert "## 소제목" in prompt
+    assert "모든 섹션과 종합의견을 완결" in prompt

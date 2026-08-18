@@ -87,7 +87,9 @@ def _generator_messages(state: QAState, *, revision: bool = False) -> list[dict[
 - 각 핵심 주장 뒤에 가능한 경우 [evidence_id]를 표시하세요."""
     if state.get("response_mode") == "review":
         output_requirements = """공식 심사의견 작성 요청입니다. 판단, 근거, 위험요인, 완화요인과 추가 확인사항을 빠짐없이 고려하세요.
-사용자가 요청한 목차를 우선하되 상환능력, 핵심 위험 및 보완조건, 종합의견을 포함해 충분히 구조화하세요."""
+사용자가 요청한 목차를 우선하되 상환능력, 핵심 위험 및 보완조건, 종합의견을 포함해 충분히 구조화하세요.
+각 최상위 소제목은 반드시 '## 소제목' Markdown 형식으로 시작하고, 하위 항목은 '###', 글머리표 또는 번호 목록을 사용하세요.
+문장이 도중에 끊기지 않도록 모든 섹션과 종합의견을 완결한 뒤 응답을 종료하세요."""
     else:
         output_requirements = """우측 대화창의 일반 대화입니다.
 질문의 의도와 맥락에 맞춰 자연스럽게 답하세요. 답변의 길이와 표현 형식은 질문에 가장 적합한 방식을 스스로 선택하세요."""
@@ -160,7 +162,7 @@ def build_graph(deps: QADeps | None = None):
         return result
 
     async def generate(state: QAState) -> dict[str, str]:
-        max_tokens = 1200 if state.get("response_mode") == "review" else 500
+        max_tokens = 2200 if state.get("response_mode") == "review" else 700
         if state.get("stream_enabled"):
             writer = get_stream_writer()
             parts: list[str] = []
@@ -174,7 +176,7 @@ def build_graph(deps: QADeps | None = None):
         return {"draft": draft, "revised_draft": draft}
 
     async def revise(state: QAState) -> dict[str, Any]:
-        max_tokens = 1300 if state.get("response_mode") == "review" else 600
+        max_tokens = 2400 if state.get("response_mode") == "review" else 800
         revised = await deps.llm.complete(_generator_messages(state, revision=True), max_tokens=max_tokens)
         count = state.get("revision_count", 0) + 1
         _event(state, "generator", "generator.revision_created", revised)

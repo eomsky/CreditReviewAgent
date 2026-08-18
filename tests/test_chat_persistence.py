@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from app.api.v1.endpoints.chat import ChatMessage, ChatRequest, _answer, _sse
+from app.api.v1.endpoints.chat import ChatMessage, ChatRequest, _answer, _prepare_request, _sse
 from app.core.config import settings
 from app.database.poc_store import connect, initialize_database
 
@@ -27,3 +27,20 @@ def test_guardrail_question_and_answer_are_persisted(tmp_path: Path, monkeypatch
             "SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id", (conversation_id,)
         ).fetchall()
     assert [row["role"] for row in rows] == ["user", "assistant"]
+
+
+def test_screen_and_server_catalog_are_included_in_agent_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'catalog.db'}")
+    initialize_database(seed=True)
+    request = ChatRequest(
+        messages=[ChatMessage(role="user", content="현재 입수 자료를 알려줘")],
+        current_review="## 종합 심사의견\n검토 중",
+        data_catalog=[{"name": "재무제표원장", "type": "테이블", "row_count": 2}],
+        screen_context={"input_data_count": 12, "selected_source": {"name": "재무제표원장"}},
+    )
+    _, _, _, context = asyncio.run(_prepare_request(request))
+    assert "[현재 화면 상태]" in context
+    assert '"input_data_count": 12' in context
+    assert "[현재 입수 데이터 카탈로그]" in context
+    assert '"재무제표원장"' in context
+    assert '"companies"' in context

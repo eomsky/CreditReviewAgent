@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.clients.colab_llm import ColabLLMClient
 from app.core.config import settings
-from app.database.poc_store import ensure_conversation, ensure_default_case, save_message
+from app.database.poc_store import connect, ensure_conversation, ensure_default_case, save_message
 from app.graphs.qa_graph import run_qa, stream_qa
 from app.services.documents import persist_and_index
 from app.services.guardrails import check_input
@@ -48,6 +48,8 @@ class ChatRequest(BaseModel):
     case_id: str | None = Field(default=None, max_length=64)
     current_review: str = Field(default="", max_length=12000)
     response_mode: str = Field(default="chat", pattern="^(chat|review)$")
+    data_catalog: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    screen_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatResponse(BaseModel):
@@ -63,16 +65,62 @@ def _last_user_question(request: ChatRequest) -> str:
     return message.content
 
 
+def _server_data_catalog(case_id: str) -> list[dict[str, Any]]:
+    """Return the actual queryable tables and persisted files visible to the agent."""
+    tables = ("companies", "financials", "loans", "documents", "document_chunks", "uploaded_files")
+    catalog: list[dict[str, Any]] = []
+    with connect() as connection:
+        for table in tables:
+            columns = [row["name"] for row in connection.execute(f"PRAGMA table_info({table})")]
+            row_count = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            catalog.append({
+                "name": table,
+                "type": "database_table",
+                "status": "queryable",
+                "columns": columns,
+                "row_count": row_count,
+            })
+        files = connection.execute(
+            """SELECT original_name,mime_type,size_bytes,status,created_at
+            FROM uploaded_files WHERE case_id=? ORDER BY created_at DESC LIMIT 50""",
+            (case_id,),
+        ).fetchall()
+    catalog.extend({
+        "name": row["original_name"],
+        "type": "uploaded_file",
+        "status": row["status"],
+        "mime_type": row["mime_type"],
+        "size_bytes": row["size_bytes"],
+        "created_at": row["created_at"],
+    } for row in files)
+    return catalog
+
+
 async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:
     question = _last_user_question(request)
     case_id = request.case_id or ensure_default_case()
     conversation_id = ensure_conversation(request.conversation_id, case_id)
     save_message(conversation_id, "user", question)
     attachment_context = await _process_attachments(conversation_id, case_id, request.attachments)
+    context_blocks: list[str] = []
     if request.current_review.strip():
-        review_context = f"[현재 화면의 심사의견]\n{request.current_review.strip()}"
-        attachment_context = f"{review_context}\n\n{attachment_context}".strip()
-    return conversation_id, case_id, question, attachment_context
+        context_blocks.append(f"[현재 화면의 심사의견]\n{request.current_review.strip()}")
+    if request.screen_context:
+        context_blocks.append(
+            "[현재 화면 상태]\n" + json.dumps(request.screen_context, ensure_ascii=False, default=str)
+        )
+    combined_catalog = {
+        "screen_sources": request.data_catalog,
+        "server_sources": _server_data_catalog(case_id),
+    }
+    context_blocks.append(
+        "[현재 입수 데이터 카탈로그]\n"
+        + json.dumps(combined_catalog, ensure_ascii=False, default=str)
+    )
+    if attachment_context:
+        context_blocks.append(attachment_context)
+    # Keep the screen and catalog state available on every turn without exceeding the model context.
+    return conversation_id, case_id, question, "\n\n".join(context_blocks)[:12_000]
 
 
 async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:

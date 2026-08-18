@@ -62,3 +62,18 @@ def test_sentence_level_evidence_popover_and_source_viewer_exist():
     assert "moveEvidence" in JS
     assert "evidence-highlight" in CHAT_CSS
     assert "table-evidence-view" in CHAT_CSS
+
+
+def test_screen_catalog_and_clipboard_images_are_sent_to_agent():
+    assert "data_catalog:sourceCatalog()" in JS
+    assert "screen_context:screenContext()" in JS
+    assert 'addEventListener("paste"' in JS
+    assert 'item.type.startsWith("image/")' in JS
+
+
+def test_review_stream_uses_completed_result_and_preserves_structure():
+    assert 'event.type==="done"' in JS
+    assert "if(!completed)throw Error" in JS
+    assert "validateCompleteReview(answer)" in JS
+    assert "renderOpinionBody" in JS
+    assert "###\\s+" in JS
