@@ -2,7 +2,7 @@ import asyncio
 
 from app.domain.evidence import Evidence, EvidenceSourceType
 from app.graphs.qa_graph import MAX_RETRIEVAL_COUNT, QADeps, run_qa, stream_qa
-from app.graphs.qa_graph import _generation_budget, _generator_messages, _parse_intent_brief, _sanitize_final_answer
+from app.graphs.qa_graph import _evidence_context, _generation_budget, _generator_messages, _parse_intent_brief, _sanitize_final_answer
 
 
 INTENT = '{"user_goal":"부채비율 검토","requested_output":"근거 기반 답변","target_entities":["부채비율"],"required_evidence":["재무자료"],"excluded_context":[],"must_answer_directly":true,"ambiguity":null,"retrieval_queries":["부채비율"]}'
@@ -196,3 +196,13 @@ INTENT BRIEF의 include_raw_data가 false입니다.
 
 ※ 담당자 추가 확인 필요: numeric_error, writing_issue"""
     assert _sanitize_final_answer(answer) == "현재 테이블은 companies, financials, loans입니다."
+
+
+def test_evidence_context_prioritizes_uploaded_document_and_stays_bounded():
+    attachment = "현재 심사의견 " + ("가" * 3000) + "\n[첨부 문서 report.pdf]\n" + ("나" * 5000)
+    evidence = [Evidence("e1", EvidenceSourceType.CASE_DOCUMENT, "doc", "case", "검색 근거", "다" * 3000)]
+    context = _evidence_context(evidence, attachment)
+    assert len(context) <= 4800
+    assert "[첨부 문서 report.pdf]" in context
+    assert "나" * 100 in context
+    assert "현재 심사의견" in context

@@ -65,7 +65,10 @@ class ColabLLMClient:
         url, headers, payload = self._request(messages, max_tokens, stream=True)
         async with httpx.AsyncClient(timeout=settings.COLAB_LLM_TIMEOUT_SECONDS, transport=self.transport) as client:
             async with client.stream("POST", url, headers=headers, json=payload) as response:
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    raw = (await response.aread()).decode("utf-8", errors="replace")[:800]
+                    detail = raw or response.reason_phrase
+                    raise LLMProtocolError(f"Colab LLM 요청이 거절되었습니다 ({response.status_code}): {detail}")
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue

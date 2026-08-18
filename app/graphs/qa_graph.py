@@ -18,7 +18,7 @@ from app.services.retrieval import RetrievalService
 
 MAX_REVISION_COUNT = 2
 MAX_RETRIEVAL_COUNT = 2
-PROMPT_VERSION = "credit-review-v5"
+PROMPT_VERSION = "credit-review-v6"
 
 
 class LLMClient(Protocol):
@@ -72,11 +72,20 @@ def _event(state: QAState, agent: str, event_type: str, content: str = "") -> No
         )
 
 
-def _evidence_context(evidences: list[Evidence], attachment: str) -> str:
-    blocks = [item.as_prompt_block() for item in evidences]
-    if attachment.strip():
-        blocks.append(f"[ATTACHMENT EVIDENCE]\n{attachment.strip()}")
-    return "\n\n".join(blocks) or "제공된 근거 없음"
+def _evidence_context(evidences: list[Evidence], attachment: str, limit: int = 4_800) -> str:
+    """Fit grounded context inside the 8k vLLM window without duplicating an uploaded document."""
+    retrieval = "\n\n".join(item.as_prompt_block() for item in evidences)
+    context = attachment.strip()
+    markers = [position for marker in ("[첨부 문서 ", "[첨부 이미지 ") if (position := context.rfind(marker)) >= 0]
+    if markers:
+        marker = max(markers)
+        screen_context = context[:marker].strip()[:700]
+        uploaded_context = context[marker:].strip()[:3_200]
+        parts = [part for part in (screen_context, uploaded_context, retrieval[:800]) if part]
+    else:
+        parts = [part for part in (context[:2_000], retrieval[:2_600]) if part]
+    combined = "\n\n".join(parts)
+    return combined[:limit] or "제공된 근거 없음"
 
 
 def _default_intent_brief(question: str) -> dict[str, Any]:

@@ -3,7 +3,7 @@ import json
 
 import httpx
 
-from app.clients.colab_llm import ColabLLMClient
+from app.clients.colab_llm import ColabLLMClient, LLMProtocolError
 
 
 def test_complete_records_finish_reason():
@@ -36,3 +36,20 @@ def test_stream_records_length_finish_reason():
 
     assert asyncio.run(collect()) == ["중간 "]
     assert client.last_finish_reason == "length"
+
+
+def test_stream_exposes_upstream_400_detail():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "maximum context length exceeded"}})
+
+    client = ColabLLMClient(httpx.MockTransport(handler))
+
+    async def collect():
+        return [token async for token in client.stream([{"role": "user", "content": "질문"}])]
+
+    try:
+        asyncio.run(collect())
+        raise AssertionError("expected LLMProtocolError")
+    except LLMProtocolError as exc:
+        assert "maximum context length exceeded" in str(exc)
+        assert "400" in str(exc)
