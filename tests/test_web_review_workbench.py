@@ -77,3 +77,11 @@ def test_review_stream_uses_completed_result_and_preserves_structure():
     assert "validateCompleteReview(answer)" in JS
     assert "renderOpinionBody" in JS
     assert "###\\s+" in JS
+
+
+def test_input_data_catalog_is_loaded_from_server_without_fixed_twelve_sources():
+    assert "const baseSources" not in JS
+    assert "loadDataCatalog" in JS
+    assert "/api/v1/poc/data-catalog" in JS
+    assert 'id="dataCountBadge">0<' in HTML
+    assert "state.sources=[...items" in JS

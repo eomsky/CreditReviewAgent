@@ -15,8 +15,9 @@ from pydantic import BaseModel, Field
 
 from app.clients.colab_llm import ColabLLMClient
 from app.core.config import settings
-from app.database.poc_store import connect, ensure_conversation, ensure_default_case, save_message
+from app.database.poc_store import ensure_conversation, ensure_default_case, save_message
 from app.graphs.qa_graph import run_qa, stream_qa
+from app.services.data_catalog import build_data_catalog
 from app.services.documents import persist_and_index
 from app.services.guardrails import check_input
 
@@ -65,37 +66,6 @@ def _last_user_question(request: ChatRequest) -> str:
     return message.content
 
 
-def _server_data_catalog(case_id: str) -> list[dict[str, Any]]:
-    """Return the actual queryable tables and persisted files visible to the agent."""
-    tables = ("companies", "financials", "loans", "documents", "document_chunks", "uploaded_files")
-    catalog: list[dict[str, Any]] = []
-    with connect() as connection:
-        for table in tables:
-            columns = [row["name"] for row in connection.execute(f"PRAGMA table_info({table})")]
-            row_count = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            catalog.append({
-                "name": table,
-                "type": "database_table",
-                "status": "queryable",
-                "columns": columns,
-                "row_count": row_count,
-            })
-        files = connection.execute(
-            """SELECT original_name,mime_type,size_bytes,status,created_at
-            FROM uploaded_files WHERE case_id=? ORDER BY created_at DESC LIMIT 50""",
-            (case_id,),
-        ).fetchall()
-    catalog.extend({
-        "name": row["original_name"],
-        "type": "uploaded_file",
-        "status": row["status"],
-        "mime_type": row["mime_type"],
-        "size_bytes": row["size_bytes"],
-        "created_at": row["created_at"],
-    } for row in files)
-    return catalog
-
-
 async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:
     question = _last_user_question(request)
     case_id = request.case_id or ensure_default_case()
@@ -111,7 +81,7 @@ async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:
         )
     combined_catalog = {
         "screen_sources": request.data_catalog,
-        "server_sources": _server_data_catalog(case_id),
+        "server_sources": build_data_catalog(case_id)["items"],
     }
     context_blocks.append(
         "[현재 입수 데이터 카탈로그]\n"
@@ -239,7 +209,7 @@ async def _process_attachments(conversation_id: str, case_id: str, attachments: 
         else:
             try:
                 _, text, _ = persist_and_index(
-                    conversation_id, attachment.filename, attachment.mime_type, raw
+                    conversation_id, attachment.filename, attachment.mime_type, raw, case_id
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=415, detail=str(exc)) from exc
