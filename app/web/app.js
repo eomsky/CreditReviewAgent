@@ -19,12 +19,12 @@ const state={caseId:null,conversationId:crypto.randomUUID().replaceAll("-",""),m
 
 
 const evidenceKeywords={
- "사업":["companies","사업","기업","신용조사"],
- "재무":["financials","재무","현금흐름"],
- "상환":["loans","대출","여신","현금흐름"],
- "위험":["companies","신용","리스크","사업계획"],
- "담보":["담보"],
- "종합":["companies","financials","loans"]
+ "사업":["companies","customer_portfolio","business_plans","사업","기업","신용조사"],
+ "재무":["financials","credit_assessments","재무","현금흐름"],
+ "상환":["loans","credit_applications","collateral","business_plans","대출","여신","현금흐름"],
+ "위험":["companies","customer_portfolio","credit_assessments","collateral","신용","리스크","사업계획"],
+ "담보":["collateral","담보"],
+ "종합":["companies","financials","loans","credit_applications","customer_portfolio","collateral","credit_assessments","business_plans"]
 };
 
 function parseOpinion(text){const clean=(text||"").replace(/^```(?:markdown)?|```$/gm,"").trim();const parts=clean.split(/^##\s+/m).filter(Boolean);if(!parts.length)return[{title:"심사의견",body:clean}];return parts.map(part=>{const [title,...lines]=part.split("\n");return{title:title.replace(/^#+\s*/,"").trim(),body:lines.join("\n").trim()}})}
@@ -82,7 +82,7 @@ function moveEvidence(delta){const next=state.activeEvidenceIndex+delta,ids=stat
 async function openDataExplorer(){try{await loadDataCatalog()}catch(error){console.warn(error)}renderSources();$("#dataExplorerDialog").showModal()}
 async function saveOpinion(){const text=state.versions[state.versionIndex].text,name=`심사의견_V${state.versions[state.versionIndex].id}.txt`,blob=new Blob([text],{type:"text/plain;charset=utf-8"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
 async function loadDataCatalog(){const pending=state.sources.filter(source=>source.file&&state.attachments.some(item=>item.file===source.file));const query=state.caseId?`?case_id=${encodeURIComponent(state.caseId)}`:"";const response=await fetch(`/api/v1/poc/data-catalog${query}`,{headers:{"Accept":"application/json"}});if(!response.ok)throw Error(`입력 데이터 현황 조회 실패 (${response.status})`);const catalog=await response.json(),items=Array.isArray(catalog.items)?catalog.items:[];let nextId=items.reduce((max,item)=>Math.max(max,Number(item.id)||0),0)+1;state.sources=[...items,...pending.map(source=>({...source,id:nextId++}))];if(!state.sources.some(source=>source.id===state.selectedSource))state.selectedSource=state.sources[0]?.id??null;renderFiles();renderVersion();if($("#dataExplorerDialog").open)renderSources()}
-async function init(){renderVersion();renderFiles();try{const r=await fetch("/api/v1/cases");if(r.ok){const d=await r.json();state.caseId=d.items?.[0]?.id??null}await loadDataCatalog()}catch(e){console.warn("입력 데이터 초기화 실패",e);renderFiles()}}
+async function init(){renderVersion();renderFiles();try{const r=await fetch("/api/v1/cases");if(r.ok){const d=await r.json();state.caseId=d.items?.[0]?.id??null}if(state.caseId){const reviewResponse=await fetch(`/api/v1/poc/initial-review?case_id=${encodeURIComponent(state.caseId)}`);if(reviewResponse.ok){const review=await reviewResponse.json();if(review.text?.trim())state.versions[0]={id:1,text:review.text,createdAt:"DB 기반 초기 의견"}}}await loadDataCatalog()}catch(e){console.warn("입력 데이터 초기화 실패",e);renderFiles()}}
 
 $("#previousOpinionVersion").onclick=()=>{if(state.versionIndex>0){state.versionIndex--;renderVersion()}};
 $("#nextOpinionVersion").onclick=()=>{if(state.versionIndex<state.versions.length-1){state.versionIndex++;renderVersion()}};

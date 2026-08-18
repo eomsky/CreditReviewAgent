@@ -17,8 +17,11 @@ def test_catalog_tracks_live_tables_and_document_additions_and_removals(
 
     initial = build_data_catalog(case_id)
     tables = {item["name"]: item for item in initial["items"] if item["type"] == "테이블"}
-    assert set(tables) == {"companies", "financials", "loans"}
-    assert tables["companies"]["row_count"] == 180
+    assert set(tables) == {
+        "business_plans", "collateral", "companies", "credit_applications",
+        "credit_assessments", "customer_portfolio", "financials", "loans",
+    }
+    assert tables["companies"]["row_count"] == 181
     assert initial["count"] == len(initial["items"])
 
     document_id = "dynamic-catalog-document"

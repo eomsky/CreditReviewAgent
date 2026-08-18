@@ -24,6 +24,12 @@ def test_seed_contains_sufficient_structured_data(isolated_db: Path):
         assert connection.execute("SELECT COUNT(*) FROM companies").fetchone()[0] >= 150
         assert connection.execute("SELECT COUNT(*) FROM financials").fetchone()[0] >= 600
         assert connection.execute("SELECT COUNT(*) FROM loans").fetchone()[0] >= 150
+        assert connection.execute("SELECT COUNT(*) FROM customer_portfolio").fetchone()[0] >= 3
+        assert connection.execute("SELECT COUNT(*) FROM collateral").fetchone()[0] >= 2
+        assert connection.execute("SELECT COUNT(*) FROM credit_assessments").fetchone()[0] >= 1
+        assert connection.execute("SELECT COUNT(*) FROM business_plans").fetchone()[0] >= 1
+        target = connection.execute("SELECT * FROM companies WHERE name='A기업'").fetchone()
+        assert target["industry"] == "자동차 및 전기차 부품 제조"
 
 
 def test_text_to_sql_is_read_only_and_returns_high_risk_companies(isolated_db: Path):

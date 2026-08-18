@@ -117,3 +117,8 @@ def test_initial_opinion_has_no_unverified_demo_numbers_and_citations_refresh():
     assert "renderFiles();renderVersion()" in JS
     assert "data-section-title" in JS
     assert "현재 문장에 연결된 근거자료가 없습니다." in JS
+
+
+def test_v1_review_is_loaded_from_seeded_database():
+    assert "/api/v1/poc/initial-review" in JS
+    assert 'createdAt:"DB 기반 초기 의견"' in JS

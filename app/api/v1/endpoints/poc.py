@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 
 from app.database.poc_store import connect, ensure_default_case
 from app.services.data_catalog import build_data_catalog
+from app.services.initial_review import build_initial_review
 
 
 router = APIRouter()
@@ -23,6 +24,12 @@ async def poc_stats() -> dict[str, int]:
 async def data_catalog(case_id: str | None = None) -> dict:
     """Return the live tables and files available for the selected review case."""
     return build_data_catalog(case_id or ensure_default_case())
+
+
+@router.get("/initial-review")
+async def initial_review(case_id: str | None = None) -> dict:
+    """Build V1 from the same seeded records shown in the input-data catalog."""
+    return build_initial_review(case_id or ensure_default_case())
 
 
 @router.get("/files/{file_id}")

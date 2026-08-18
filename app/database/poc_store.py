@@ -15,7 +15,7 @@ from typing import Any
 from app.core.config import PROJECT_ROOT, settings
 
 
-ALLOWED_QUERY_TABLES = {"companies", "financials", "loans"}
+ALLOWED_QUERY_TABLES = {"business_plans", "collateral", "companies", "credit_applications", "credit_assessments", "customer_portfolio", "financials", "loans"}
 
 
 def database_path() -> Path:
@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS financials (
     cash_flow REAL NOT NULL,
     debt_ratio REAL NOT NULL,
     interest_coverage REAL NOT NULL,
+    current_assets REAL NOT NULL DEFAULT 0,
+    current_liabilities REAL NOT NULL DEFAULT 0,
+    annual_debt_service REAL NOT NULL DEFAULT 0,
+    dscr REAL NOT NULL DEFAULT 0,
     UNIQUE(company_id, fiscal_year)
 );
 CREATE TABLE IF NOT EXISTS loans (
@@ -70,6 +74,55 @@ CREATE TABLE IF NOT EXISTS loans (
     maturity_date TEXT NOT NULL,
     delinquency_days INTEGER NOT NULL,
     status TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS credit_applications (
+    id INTEGER PRIMARY KEY,
+    case_id TEXT NOT NULL,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    requested_amount REAL NOT NULL,
+    facility_amount REAL NOT NULL,
+    working_capital_amount REAL NOT NULL,
+    purpose TEXT NOT NULL,
+    term_months INTEGER NOT NULL,
+    repayment_method TEXT NOT NULL,
+    requested_date TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS customer_portfolio (
+    id INTEGER PRIMARY KEY,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    customer_name TEXT NOT NULL,
+    revenue_share REAL NOT NULL,
+    order_backlog REAL NOT NULL,
+    contract_end TEXT NOT NULL,
+    status TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS collateral (
+    id INTEGER PRIMARY KEY,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    collateral_type TEXT NOT NULL,
+    appraised_value REAL NOT NULL,
+    senior_claim REAL NOT NULL,
+    eligible_value REAL NOT NULL,
+    valuation_date TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS credit_assessments (
+    id INTEGER PRIMARY KEY,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    assessment_date TEXT NOT NULL,
+    agency TEXT NOT NULL,
+    grade TEXT NOT NULL,
+    outlook TEXT NOT NULL,
+    watch_reason TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS business_plans (
+    id INTEGER PRIMARY KEY,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    plan_year INTEGER NOT NULL,
+    capex_amount REAL NOT NULL,
+    working_capital_need REAL NOT NULL,
+    projected_revenue REAL NOT NULL,
+    projected_cash_flow REAL NOT NULL,
+    repayment_source TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -164,6 +217,10 @@ def initialize_database(seed: bool = True) -> None:
         _ensure_column(connection, "documents", "knowledge_scope", "TEXT NOT NULL DEFAULT 'case'")
         _ensure_column(connection, "documents", "status", "TEXT NOT NULL DEFAULT 'READY'")
         _ensure_column(connection, "documents", "version", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(connection, "financials", "current_assets", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "financials", "current_liabilities", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "financials", "annual_debt_service", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "financials", "dscr", "REAL NOT NULL DEFAULT 0")
         connection.execute(
             """INSERT OR IGNORE INTO case_access(principal_id,case_id,role)
             SELECT 'poc-user',id,'owner' FROM review_cases"""
@@ -171,6 +228,8 @@ def initialize_database(seed: bool = True) -> None:
         count = connection.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
         if seed and count == 0:
             _seed_financial_data(connection)
+        if seed:
+            _seed_review_case_data(connection)
 
 
 def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -282,6 +341,93 @@ def _seed_financial_data(connection: sqlite3.Connection, company_count: int = 18
                 VALUES (?,?,?,?,?,?,?,?)""",
                 (company_id, rng.choice(["운전자금", "시설자금", "무역금융", "매출채권담보"]), round(amount, 2), round(amount * rng.uniform(0.25, 0.98), 2), round(rng.uniform(3.2, 9.8), 2), f"{rng.randint(2026, 2031)}-{rng.randint(1,12):02d}-28", delinquency, "연체" if delinquency >= 30 else "정상"),
             )
+
+
+def _seed_review_case_data(connection: sqlite3.Connection) -> None:
+    """Seed one internally consistent automotive review case used by the V1 opinion."""
+    now = datetime.now(UTC).isoformat()
+    company_id = 1001
+    connection.execute(
+        """INSERT INTO companies(id,name,industry,region,employee_count,founded_year,credit_grade,risk_level,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        name=excluded.name,industry=excluded.industry,region=excluded.region,
+        employee_count=excluded.employee_count,founded_year=excluded.founded_year,
+        credit_grade=excluded.credit_grade,risk_level=excluded.risk_level""",
+        (company_id, "A기업", "자동차 및 전기차 부품 제조", "경기", 420, 2004, "BBB+", "정상", now),
+    )
+    financial_rows = [
+        (2022, 135000, 8100, 4900, 160000, 90000, 70000, 7200, 128.6, 3.1, 52000, 42000, 6200, 1.16),
+        (2023, 149500, 10400, 6500, 172000, 95000, 77000, 9300, 123.4, 3.7, 59000, 44000, 6600, 1.41),
+        (2024, 158000, 12500, 8200, 181000, 97000, 84000, 10800, 115.5, 4.2, 65000, 44500, 7000, 1.54),
+        (2025, 168000, 14800, 9800, 190000, 99000, 91000, 12500, 108.8, 4.8, 70104, 46000, 8621, 1.45),
+    ]
+    for row in financial_rows:
+        connection.execute(
+            """INSERT INTO financials(company_id,fiscal_year,revenue,operating_profit,net_income,
+            total_assets,total_liabilities,equity,cash_flow,debt_ratio,interest_coverage,
+            current_assets,current_liabilities,annual_debt_service,dscr)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(company_id,fiscal_year) DO UPDATE SET
+            revenue=excluded.revenue,operating_profit=excluded.operating_profit,net_income=excluded.net_income,
+            total_assets=excluded.total_assets,total_liabilities=excluded.total_liabilities,equity=excluded.equity,
+            cash_flow=excluded.cash_flow,debt_ratio=excluded.debt_ratio,interest_coverage=excluded.interest_coverage,
+            current_assets=excluded.current_assets,current_liabilities=excluded.current_liabilities,
+            annual_debt_service=excluded.annual_debt_service,dscr=excluded.dscr""",
+            (company_id, *row),
+        )
+    case = connection.execute(
+        "SELECT id FROM review_cases WHERE company_name='A기업' ORDER BY created_at LIMIT 1"
+    ).fetchone()
+    if case:
+        case_id = str(case[0])
+    else:
+        case_id = "CASE-2026-A001"
+        connection.execute(
+            """INSERT OR IGNORE INTO review_cases
+            (id,title,company_name,review_type,owner_name,status,created_at,updated_at,completed_at)
+            VALUES (?,?,?,?,?,?,?,?,NULL)""",
+            (case_id, "A기업 / 2026 정기심사", "A기업", "정기심사", "김심사", "IN_PROGRESS", now, now),
+        )
+    connection.execute(
+        """INSERT OR REPLACE INTO credit_applications VALUES (1,?,?,?,?,?,?,?,?,?)""",
+        (case_id, company_id, 30000, 22000, 8000, "전기차 부품 생산설비 고도화 및 수주 대응 운전자금", 36, "6개월 거치 후 분할상환", "2026-08-01"),
+    )
+    connection.execute("DELETE FROM loans WHERE company_id=?", (company_id,))
+    connection.executemany(
+        """INSERT INTO loans(company_id,product,approved_amount,outstanding_amount,interest_rate,maturity_date,delinquency_days,status)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        [
+            (company_id, "시설자금", 18000, 12600, 4.3, "2028-06-30", 0, "정상"),
+            (company_id, "운전자금", 12000, 8400, 4.7, "2027-03-31", 0, "정상"),
+            (company_id, "무역금융", 5000, 2100, 4.1, "2026-12-31", 0, "정상"),
+        ],
+    )
+    for table in ("customer_portfolio", "collateral", "credit_assessments", "business_plans"):
+        connection.execute(f"DELETE FROM {table} WHERE company_id=?", (company_id,))
+    connection.executemany(
+        "INSERT INTO customer_portfolio(company_id,customer_name,revenue_share,order_backlog,contract_end,status) VALUES (?,?,?,?,?,?)",
+        [
+            (company_id, "주요 완성차 A", 28.0, 24000, "2028-12-31", "계약 유지"),
+            (company_id, "전기차 부품사 B", 22.0, 18000, "2027-12-31", "계약 유지"),
+            (company_id, "해외 고객사 C", 15.0, 10000, "2027-06-30", "신규 양산"),
+        ],
+    )
+    connection.executemany(
+        "INSERT INTO collateral(company_id,collateral_type,appraised_value,senior_claim,eligible_value,valuation_date) VALUES (?,?,?,?,?,?)",
+        [
+            (company_id, "공장 토지·건물", 45000, 12000, 26000, "2026-06-30"),
+            (company_id, "생산설비", 18000, 3000, 9000, "2026-07-15"),
+        ],
+    )
+    connection.execute(
+        "INSERT INTO credit_assessments(company_id,assessment_date,agency,grade,outlook,watch_reason) VALUES (?,?,?,?,?,?)",
+        (company_id, "2026-07-20", "내부신용평가", "BBB+", "안정적", "고객사 집중도 및 전기차 수요 변동 모니터링"),
+    )
+    connection.execute(
+        """INSERT INTO business_plans(company_id,plan_year,capex_amount,working_capital_need,
+        projected_revenue,projected_cash_flow,repayment_source) VALUES (?,?,?,?,?,?,?)""",
+        (company_id, 2026, 22000, 8000, 185000, 14200, "확정 수주 매출대금 및 영업현금흐름"),
+    )
 
 
 def ensure_conversation(conversation_id: str | None = None, case_id: str | None = None) -> str:
