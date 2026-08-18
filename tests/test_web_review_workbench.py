@@ -109,3 +109,11 @@ def test_attachment_only_submission_and_actual_pdf_preview_are_supported():
     assert "<iframe" in JS
     assert "payload.detail" in JS
     assert "기업 현황 및 검토 결과" not in JS
+
+
+def test_initial_opinion_has_no_unverified_demo_numbers_and_citations_refresh():
+    for unsupported in ("108.8%", "152.4%", "1.45배", "1,680억원", "12.3%"):
+        assert unsupported not in JS
+    assert "renderFiles();renderVersion()" in JS
+    assert "data-section-title" in JS
+    assert "현재 문장에 연결된 근거자료가 없습니다." in JS
