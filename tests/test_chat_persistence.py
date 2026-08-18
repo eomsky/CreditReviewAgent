@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from app.api.v1.endpoints.chat import ChatMessage, ChatRequest, _answer, _prepare_request, _sse
+from app.api.v1.endpoints.chat import ChatMessage, ChatRequest, _answer, _catalog_summary_for_prompt, _prepare_request, _sse
 from app.core.config import settings
 from app.database.poc_store import connect, initialize_database
 
@@ -41,9 +41,11 @@ def test_screen_and_server_catalog_are_included_in_agent_context(tmp_path: Path,
     _, _, _, context = asyncio.run(_prepare_request(request))
     assert "[현재 화면 상태]" in context
     assert '"input_data_count": 12' in context
-    assert "[현재 입수 데이터 카탈로그]" in context
-    assert '"재무제표원장"' in context
+    assert "[현재 입수 데이터 카탈로그 요약]" in context
     assert '"companies"' in context
+    assert '"sample_rows"' not in context
+    assert '"rows"' not in context
+    assert '"columns"' not in context
 
 
 def test_recent_conversation_is_available_to_intent_interpreter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -59,3 +61,17 @@ def test_recent_conversation_is_available_to_intent_interpreter(tmp_path: Path, 
     assert "[최근 대화]" in context
     assert "재무자료와 대출자료를 비교해줘" in context
     assert "두 자료를 비교했습니다." in context
+
+
+def test_catalog_prompt_is_compact_and_not_duplicated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'compact.db'}")
+    initialize_database(seed=True)
+    from app.database.poc_store import ensure_default_case
+
+    summary = _catalog_summary_for_prompt(ensure_default_case())
+    assert summary["count"] == len(summary["items"])
+    assert {item["name"] for item in summary["items"] if item["type"] == "테이블"} == {
+        "companies", "financials", "loans"
+    }
+    assert all("rows" not in item and "columns" not in item and "body" not in item for item in summary["items"])
+    assert all("column_count" in item for item in summary["items"])

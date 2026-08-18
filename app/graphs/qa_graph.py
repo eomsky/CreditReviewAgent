@@ -18,7 +18,7 @@ from app.services.retrieval import RetrievalService
 
 MAX_REVISION_COUNT = 2
 MAX_RETRIEVAL_COUNT = 2
-PROMPT_VERSION = "credit-review-v3"
+PROMPT_VERSION = "credit-review-v4"
 
 
 class LLMClient(Protocol):
@@ -57,6 +57,7 @@ class QAState(TypedDict, total=False):
     stream_enabled: bool
     response_mode: str
     intent_brief: dict[str, Any]
+    generation_finish_reason: str | None
 
 
 def default_dependencies() -> QADeps:
@@ -88,7 +89,17 @@ def _default_intent_brief(question: str) -> dict[str, Any]:
         "must_answer_directly": True,
         "ambiguity": None,
         "retrieval_queries": [question],
+        "detail_level": "standard",
+        "include_raw_data": False,
+        "completion_criteria": ["사용자 질문에 직접 답할 것", "문장을 완결할 것"],
+        "response_budget": 700,
     }
+
+
+def _text_list(value: Any, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()][:limit]
 
 
 def _parse_intent_brief(raw: str, question: str) -> dict[str, Any]:
@@ -110,19 +121,40 @@ def _parse_intent_brief(raw: str, question: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         return _default_intent_brief(question)
     fallback = _default_intent_brief(question)
+    detail_level = str(value.get("detail_level") or "standard").lower()
+    if detail_level not in {"brief", "standard", "detailed"}:
+        detail_level = "standard"
+    try:
+        response_budget = int(value.get("response_budget", fallback["response_budget"]))
+    except (TypeError, ValueError):
+        response_budget = fallback["response_budget"]
     brief = {
         "user_goal": str(value.get("user_goal") or question).strip(),
         "requested_output": str(value.get("requested_output") or fallback["requested_output"]).strip(),
-        "target_entities": [str(item) for item in value.get("target_entities", []) if str(item).strip()][:10],
-        "required_evidence": [str(item) for item in value.get("required_evidence", []) if str(item).strip()][:10],
-        "excluded_context": [str(item) for item in value.get("excluded_context", []) if str(item).strip()][:10],
+        "target_entities": _text_list(value.get("target_entities"), 10),
+        "required_evidence": _text_list(value.get("required_evidence"), 10),
+        "excluded_context": _text_list(value.get("excluded_context"), 10),
         "must_answer_directly": bool(value.get("must_answer_directly", True)),
         "ambiguity": str(value["ambiguity"]).strip() if value.get("ambiguity") else None,
-        "retrieval_queries": [str(item) for item in value.get("retrieval_queries", []) if str(item).strip()][:6],
+        "retrieval_queries": _text_list(value.get("retrieval_queries"), 6),
+        "detail_level": detail_level,
+        "include_raw_data": bool(value.get("include_raw_data", False)),
+        "completion_criteria": _text_list(value.get("completion_criteria"), 8) or fallback["completion_criteria"],
+        "response_budget": max(300, min(response_budget, 2400)),
     }
     if not brief["retrieval_queries"]:
         brief["retrieval_queries"] = [brief["user_goal"]]
     return brief
+
+
+def _generation_budget(state: QAState, *, revision: bool = False) -> int:
+    brief = state.get("intent_brief") or {}
+    budget = int(brief.get("response_budget") or 700)
+    if state.get("response_mode") == "review":
+        budget = max(budget, 1800)
+    if revision:
+        budget += 300
+    return max(300, min(budget, 2800))
 
 
 def _generator_messages(state: QAState, *, revision: bool = False) -> list[dict[str, Any]]:
@@ -148,6 +180,8 @@ def _generator_messages(state: QAState, *, revision: bool = False) -> list[dict[
 [OUTPUT REQUIREMENTS]
 {output_requirements}
 The original user question is authoritative. Follow the intent brief, use only required context, avoid excluded context, and answer the requested output directly.
+Respect detail_level and completion_criteria. Do not print raw rows, samples, full schemas, or long source dumps unless include_raw_data is true.
+Prefer a concise summary first. Do not repeat the screen state or review text unless it directly answers the question.
 If ambiguity is not null and materially changes the answer, ask one concise clarification question instead of guessing."""
     if revision:
         body += f"""\n[CURRENT ANSWER]\n{state.get('revised_draft') or state.get('draft', '')}
@@ -185,6 +219,8 @@ def _deterministic_issues(state: QAState, candidate: str) -> list[ValidationIssu
     candidate_numbers = set(re.findall(r"(?<!\w)-?\d[\d,.]*%?", candidate))
     unsupported = sorted(number for number in candidate_numbers - evidence_numbers if number.rstrip("%").replace(",", "").isdigit() and float(number.rstrip("%").replace(",", "")) > 5)
     issues = []
+    if state.get("generation_finish_reason") == "length":
+        issues.append(ValidationIssue(IssueType.WRITING_ISSUE, "출력 토큰 한도로 답변이 완결되지 않았습니다. 핵심 내용 중심으로 완결해 다시 작성하세요."))
     if unsupported:
         issues.append(ValidationIssue(IssueType.NUMERIC_ERROR, f"근거에서 확인되지 않는 수치: {', '.join(unsupported[:8])}"))
     if state.get("evidence_conflicts"):
@@ -206,7 +242,8 @@ If the request is clear, ambiguity must be null. Never answer the user's questio
 [AVAILABLE CONTEXT]
 {state.get('attachment_context', '')[:6000]}
 [OUTPUT JSON]
-{{"user_goal":"...","requested_output":"...","target_entities":[],"required_evidence":[],"excluded_context":[],"must_answer_directly":true,"ambiguity":null,"retrieval_queries":[]}}"""
+{{"user_goal":"...","requested_output":"...","target_entities":[],"required_evidence":[],"excluded_context":[],"must_answer_directly":true,"ambiguity":null,"retrieval_queries":[],"detail_level":"brief|standard|detailed","include_raw_data":false,"completion_criteria":[],"response_budget":700}}
+Use brief/300-500 tokens for simple lookups or lists, standard/600-900 for normal analysis, and detailed/1200-2000 only when the user explicitly requests depth. Raw data is false unless explicitly requested."""
         raw = await deps.llm.complete(
             [{"role": "system", "content": "사용자 의도를 왜곡하지 말고 JSON 작업 지시서만 작성하세요."}, {"role": "user", "content": prompt}],
             max_tokens=600,
@@ -234,8 +271,8 @@ If the request is clear, ambiguity must be null. Never answer the user's questio
         _event({**state, **result}, "retrieval", "retrieval.completed", json.dumps({"count": len(evidence), "query_id": query_id, "prompt_version": PROMPT_VERSION}))
         return result
 
-    async def generate(state: QAState) -> dict[str, str]:
-        max_tokens = 2200 if state.get("response_mode") == "review" else 700
+    async def generate(state: QAState) -> dict[str, Any]:
+        max_tokens = _generation_budget(state)
         if state.get("stream_enabled"):
             writer = get_stream_writer()
             parts: list[str] = []
@@ -245,15 +282,17 @@ If the request is clear, ambiguity must be null. Never answer the user's questio
             draft = "".join(parts)
         else:
             draft = await deps.llm.complete(_generator_messages(state), max_tokens=max_tokens)
+        finish_reason = getattr(deps.llm, "last_finish_reason", None)
         _event(state, "generator", "generator.draft_created", draft)
-        return {"draft": draft, "revised_draft": draft}
+        return {"draft": draft, "revised_draft": draft, "generation_finish_reason": finish_reason}
 
     async def revise(state: QAState) -> dict[str, Any]:
-        max_tokens = 2400 if state.get("response_mode") == "review" else 800
+        max_tokens = _generation_budget(state, revision=True)
         revised = await deps.llm.complete(_generator_messages(state, revision=True), max_tokens=max_tokens)
+        finish_reason = getattr(deps.llm, "last_finish_reason", None)
         count = state.get("revision_count", 0) + 1
         _event(state, "generator", "generator.revision_created", revised)
-        return {"revised_draft": revised, "revision_count": count}
+        return {"revised_draft": revised, "revision_count": count, "generation_finish_reason": finish_reason}
 
     async def validate(state: QAState) -> dict[str, Any]:
         candidate = state.get("revised_draft") or state.get("draft", "")
@@ -267,7 +306,9 @@ If the request is clear, ambiguity must be null. Never answer the user's questio
 [ORIGINAL QUESTION]\n{state.get('question', '')}
 [INTENT BRIEF]\n{json.dumps(state.get('intent_brief', {}), ensure_ascii=False)}
 [CHECKS]\n{mode_checks}
+INTENT BRIEF의 completion_criteria, detail_level, include_raw_data, response_budget 준수 여부와 문장 완결성을 확인하세요.
 질문과 무관하거나 요청한 결과를 주지 않으면 question_misalignment 이슈를 반환하세요.
+불필요한 원시 행·샘플·전체 스키마를 출력하거나 답변이 끊겼으면 writing_issue를 반환하세요.
 [EVIDENCE]\n{state.get('evidence_context', '')}
 [ANSWER]\n{candidate}
 [OUTPUT] JSON 하나만 반환: {{"approved": true, "issues": [{{"type": "question_misalignment", "message": "...", "evidence_ids": []}}], "missing_evidence_queries": []}}"""

@@ -19,6 +19,7 @@ class LLMProtocolError(RuntimeError):
 class ColabLLMClient:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.transport = transport
+        self.last_finish_reason: str | None = None
 
     def _request(self, messages: list[dict[str, Any]], max_tokens: int, stream: bool = False) -> tuple[str, dict[str, str], dict[str, Any]]:
         return (
@@ -46,10 +47,13 @@ class ColabLLMClient:
         raise RuntimeError("unreachable") from last_error
 
     async def complete(self, messages: list[dict[str, Any]], max_tokens: int = 1024) -> str:
+        self.last_finish_reason = None
         url, headers, payload = self._request(messages, max_tokens)
         response = await self._post(url, headers, payload)
         try:
-            content = response.json()["choices"][0]["message"]["content"]
+            choice = response.json()["choices"][0]
+            content = choice["message"]["content"]
+            self.last_finish_reason = choice.get("finish_reason")
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise LLMProtocolError("missing choices[0].message.content") from exc
         if not isinstance(content, str):
@@ -57,6 +61,7 @@ class ColabLLMClient:
         return content
 
     async def stream(self, messages: list[dict[str, Any]], max_tokens: int = 1024) -> AsyncIterator[str]:
+        self.last_finish_reason = None
         url, headers, payload = self._request(messages, max_tokens, stream=True)
         async with httpx.AsyncClient(timeout=settings.COLAB_LLM_TIMEOUT_SECONDS, transport=self.transport) as client:
             async with client.stream("POST", url, headers=headers, json=payload) as response:
@@ -69,7 +74,10 @@ class ColabLLMClient:
                         return
                     try:
                         event = json.loads(data)
-                        content = event["choices"][0]["delta"].get("content")
+                        choice = event["choices"][0]
+                        content = choice["delta"].get("content")
+                        if choice.get("finish_reason"):
+                            self.last_finish_reason = choice["finish_reason"]
                     except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
                         raise LLMProtocolError("malformed streaming event") from exc
                     if content is not None and not isinstance(content, str):

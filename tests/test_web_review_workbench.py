@@ -65,7 +65,7 @@ def test_sentence_level_evidence_popover_and_source_viewer_exist():
 
 
 def test_screen_catalog_and_clipboard_images_are_sent_to_agent():
-    assert "data_catalog:sourceCatalog()" in JS
+    assert "data_catalog:sourceCatalog()" not in JS
     assert "screen_context:screenContext()" in JS
     assert 'addEventListener("paste"' in JS
     assert 'item.type.startsWith("image/")' in JS
@@ -85,3 +85,9 @@ def test_input_data_catalog_is_loaded_from_server_without_fixed_twelve_sources()
     assert "/api/v1/poc/data-catalog" in JS
     assert 'id="dataCountBadge">0<' in HTML
     assert "state.sources=[...items" in JS
+
+
+def test_chat_request_does_not_resend_catalog_rows_or_samples():
+    assert "function sourceCatalog()" not in JS
+    assert "sample_rows" not in JS
+    assert "screen_context:screenContext()" in JS

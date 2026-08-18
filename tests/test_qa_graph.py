@@ -2,7 +2,7 @@ import asyncio
 
 from app.domain.evidence import Evidence, EvidenceSourceType
 from app.graphs.qa_graph import MAX_RETRIEVAL_COUNT, QADeps, run_qa, stream_qa
-from app.graphs.qa_graph import _generator_messages, _parse_intent_brief
+from app.graphs.qa_graph import _generation_budget, _generator_messages, _parse_intent_brief
 
 
 INTENT = '{"user_goal":"부채비율 검토","requested_output":"근거 기반 답변","target_entities":["부채비율"],"required_evidence":["재무자료"],"excluded_context":[],"must_answer_directly":true,"ambiguity":null,"retrieval_queries":["부채비율"]}'
@@ -12,13 +12,19 @@ class FakeLLM:
     def __init__(self, responses, stream_tokens=None):
         self.responses = iter(responses)
         self.stream_tokens = stream_tokens or ["근거 ", "답변"]
+        self.last_finish_reason = None
+        self.max_tokens_used = []
 
     async def complete(self, messages, max_tokens=1024):
+        self.max_tokens_used.append(max_tokens)
+        self.last_finish_reason = "stop"
         return next(self.responses)
 
     async def stream(self, messages, max_tokens=1024):
+        self.max_tokens_used.append(max_tokens)
         for token in self.stream_tokens:
             yield token
+        self.last_finish_reason = "stop"
 
 
 class FakeRetrieval:
@@ -141,3 +147,61 @@ def test_review_prompt_requires_complete_markdown_sections():
     })[-1]["content"]
     assert "## 소제목" in prompt
     assert "모든 섹션과 종합의견을 완결" in prompt
+
+
+def test_intent_controls_detail_raw_data_completion_and_budget():
+    brief = _parse_intent_brief(
+        '{"user_goal":"자료 상세 분석","requested_output":"상세 보고서","detail_level":"detailed","include_raw_data":true,"completion_criteria":["표본 3건 포함","결론 완결"],"response_budget":1600}',
+        "자료를 분석해줘",
+    )
+    assert brief["detail_level"] == "detailed"
+    assert brief["include_raw_data"] is True
+    assert brief["completion_criteria"] == ["표본 3건 포함", "결론 완결"]
+    assert _generation_budget({"intent_brief": brief, "response_mode": "chat"}) == 1600
+    assert _generation_budget({"intent_brief": brief, "response_mode": "review"}) == 1800
+
+
+def test_generator_blocks_raw_dumps_unless_intent_requests_them():
+    state = {
+        "question": "현재 테이블 목록을 알려줘",
+        "evidence_context": "companies 180건, financials 720건, loans 360건",
+        "response_mode": "chat",
+        "intent_brief": {
+            "user_goal": "현재 테이블 목록 확인",
+            "requested_output": "이름과 건수의 간결한 목록",
+            "detail_level": "brief",
+            "include_raw_data": False,
+            "completion_criteria": ["테이블명과 건수를 포함"],
+            "response_budget": 400,
+        },
+    }
+    prompt = _generator_messages(state)[-1]["content"]
+    assert "Do not print raw rows" in prompt
+    assert '"detail_level": "brief"' in prompt
+    assert '"include_raw_data": false' in prompt
+
+
+def test_length_finish_reason_forces_compact_revision():
+    intent = '{"user_goal":"테이블 목록 확인","requested_output":"이름과 건수","detail_level":"brief","include_raw_data":false,"completion_criteria":["세 테이블을 모두 포함","문장을 완결"],"response_budget":400}'
+    llm = FakeLLM([
+        intent,
+        "companies의 전체 원시 데이터는 다음과 같습니다...",
+        '{"approved":true,"issues":[],"missing_evidence_queries":[]}',
+        "현재 테이블은 companies, financials, loans입니다.",
+        '{"approved":true,"issues":[],"missing_evidence_queries":[]}',
+    ])
+    original_complete = llm.complete
+    calls = 0
+
+    async def complete_with_first_generation_cutoff(messages, max_tokens=1024):
+        nonlocal calls
+        result = await original_complete(messages, max_tokens)
+        calls += 1
+        llm.last_finish_reason = "length" if calls == 2 else "stop"
+        return result
+
+    llm.complete = complete_with_first_generation_cutoff
+    result = asyncio.run(run_qa("현재 테이블 목록을 알려줘", deps=QADeps(llm, FakeRetrieval()), response_mode="chat"))
+    assert result["revision_count"] == 1
+    assert result["generation_finish_reason"] == "stop"
+    assert result["final_answer"].endswith("입니다.")

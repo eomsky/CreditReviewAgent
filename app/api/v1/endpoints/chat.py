@@ -66,6 +66,20 @@ def _last_user_question(request: ChatRequest) -> str:
     return message.content
 
 
+def _catalog_summary_for_prompt(case_id: str) -> dict[str, Any]:
+    """Keep the default LLM context compact; detailed rows are retrieved only when requested."""
+    catalog = build_data_catalog(case_id)
+    items = [{
+        "name": item.get("name"),
+        "type": item.get("type"),
+        "status": item.get("status"),
+        "row_count": item.get("row_count"),
+        "column_count": len(item.get("columns") or []),
+        "knowledge_scope": item.get("knowledge_scope"),
+    } for item in catalog["items"]]
+    return {"count": len(items), "items": items, "refreshed_at": catalog["refreshed_at"]}
+
+
 async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:
     question = _last_user_question(request)
     case_id = request.case_id or ensure_default_case()
@@ -86,13 +100,9 @@ async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:
         context_blocks.append(
             "[현재 화면 상태]\n" + json.dumps(request.screen_context, ensure_ascii=False, default=str)
         )
-    combined_catalog = {
-        "screen_sources": request.data_catalog,
-        "server_sources": build_data_catalog(case_id)["items"],
-    }
     context_blocks.append(
-        "[현재 입수 데이터 카탈로그]\n"
-        + json.dumps(combined_catalog, ensure_ascii=False, default=str)
+        "[현재 입수 데이터 카탈로그 요약]\n"
+        + json.dumps(_catalog_summary_for_prompt(case_id), ensure_ascii=False, default=str)
     )
     if attachment_context:
         context_blocks.append(attachment_context)
