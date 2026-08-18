@@ -15,10 +15,10 @@ from pydantic import BaseModel, Field
 
 from app.clients.colab_llm import ColabLLMClient
 from app.core.config import settings
-from app.database.poc_store import ensure_conversation, ensure_default_case, save_message
+from app.database.poc_store import ensure_conversation, ensure_default_case, get_case, save_message
 from app.graphs.qa_graph import run_qa, stream_qa
 from app.services.data_catalog import build_data_catalog
-from app.services.documents import persist_and_index
+from app.services.documents import is_company_relevant, persist_and_index
 from app.services.guardrails import check_input
 
 
@@ -216,27 +216,35 @@ async def _process_attachments(conversation_id: str, case_id: str, attachments: 
             detail=f"한 번에 이미지는 최대 {settings.MAX_IMAGES_PER_MESSAGE}개까지 분석할 수 있습니다.",
         )
 
+    case = get_case(case_id) or {}
+    target_company = str(case.get("company_name") or "").strip()
     extracted: list[str] = []
     for attachment in attachments:
         raw = _decode_attachment(attachment)
-        if attachment.mime_type.startswith("image/"):
-            image_text = await _analyze_image(attachment, raw)
-            stored, _, file_id = persist_and_index(
-                conversation_id, attachment.filename, attachment.mime_type, raw, case_id
+        try:
+            if attachment.mime_type.startswith("image/"):
+                text = await _analyze_image(attachment, raw)
+                label = "이미지"
+            else:
+                text = None
+                label = "문서"
+            _, processed_text, _ = persist_and_index(
+                conversation_id,
+                attachment.filename,
+                attachment.mime_type,
+                raw,
+                case_id,
+                target_company_name=target_company,
+                extracted_text=text,
             )
-            # Images have no local text extractor, so persist their model description separately.
-            from app.database.poc_store import index_document
-
-            index_document(file_id, attachment.filename, stored, attachment.mime_type, image_text, case_id=case_id)
-            extracted.append(f"[첨부 이미지 {attachment.filename}]\n{image_text}")
+        except ValueError as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        if is_company_relevant(processed_text, attachment.filename, target_company):
+            extracted.append(f"[첨부 {label} {attachment.filename}]\n{processed_text}")
         else:
-            try:
-                _, text, _ = persist_and_index(
-                    conversation_id, attachment.filename, attachment.mime_type, raw, case_id
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=415, detail=str(exc)) from exc
-            extracted.append(f"[첨부 문서 {attachment.filename}]\n{text}")
+            extracted.append(
+                f"[첨부 제외 {attachment.filename}] 심사대상 기업({target_company})과의 관련성이 확인되지 않아 근거로 사용하지 않습니다."
+            )
     return "\n\n".join(extracted)[: settings.MAX_DOCUMENT_TEXT_CHARS]
 
 
@@ -244,7 +252,7 @@ async def _analyze_image(attachment: ChatAttachment, raw: bytes) -> str:
     content = [
         {
             "type": "text",
-            "text": "이 이미지를 여신심사 관점에서 정확히 판독하세요. 보이는 문자, 표, 수치와 위험징후를 구조적으로 설명하세요.",
+            "text": "이미지에 표시된 회사·기관명을 먼저 식별하고, 보이는 문자·표·수치를 정확히 판독하세요. 확인되지 않은 회사명은 추측하지 마세요.",
         },
         {
             "type": "image_url",

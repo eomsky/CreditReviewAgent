@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.database.poc_store import (
     TextToSQLService,
     connect,
+    ensure_default_case,
     index_document,
     initialize_database,
     search_documents,
@@ -47,3 +48,16 @@ def test_fts_rag_returns_indexed_credit_policy(isolated_db: Path, tmp_path: Path
     results = search_documents("부채비율 고위험 기준")
     assert results
     assert results[0]["title"] == "여신정책"
+
+
+def test_case_retrieval_excludes_documents_without_target_company(isolated_db: Path, tmp_path: Path):
+    case_id = ensure_default_case()
+    unrelated = tmp_path / "industry.txt"
+    unrelated.write_text("자동차 산업 매출 전망과 글로벌 판매량 분석", encoding="utf-8")
+    related = tmp_path / "company.txt"
+    related.write_text("A기업의 자동차 부품 매출 전망과 수주 현황", encoding="utf-8")
+    index_document("unrelated", "자동차 산업 보고서", unrelated, "text/plain", unrelated.read_text(encoding="utf-8"), case_id=case_id)
+    index_document("related", "A기업 경영자료", related, "text/plain", related.read_text(encoding="utf-8"), case_id=case_id)
+    results = search_documents("자동차 매출 전망", case_id=case_id)
+    assert results
+    assert {item["document_id"] for item in results} == {"related"}

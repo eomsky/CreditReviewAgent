@@ -79,3 +79,11 @@ def test_catalog_prompt_is_compact_and_not_duplicated(tmp_path: Path, monkeypatc
     assert all("refreshed_at" not in item for item in summary["items"])
     table_items = [item for item in summary["items"] if item["type"] == "테이블"]
     assert all("id" not in item["key_columns"] and "created_at" not in item["key_columns"] for item in table_items)
+
+
+def test_attachment_processing_requires_target_company_match():
+    from app.api.v1.endpoints import chat
+    source = Path(chat.__file__).read_text(encoding="utf-8")
+    assert "target_company_name=target_company" in source
+    assert "심사대상 기업" in source
+    assert "근거로 사용하지 않습니다" in source

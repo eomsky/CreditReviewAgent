@@ -21,12 +21,29 @@ def safe_filename(filename: str) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣._-]", "_", Path(filename).name)
 
 
+def _normalized_entity(value: str) -> str:
+    normalized = re.sub(r"주식회사|㈜|\(주\)", "", value, flags=re.IGNORECASE)
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", normalized).lower()
+
+
+def is_company_relevant(text: str, filename: str, company_name: str | None) -> bool:
+    """Fail closed: case uploads are evidence only when the target company is named."""
+    target = _normalized_entity(company_name or "")
+    if len(target) < 2:
+        return False
+    haystack = _normalized_entity(f"{filename}\n{text}")
+    return target in haystack
+
+
 def persist_and_index(
     conversation_id: str,
     filename: str,
     mime_type: str,
     raw: bytes,
     case_id: str | None = None,
+    *,
+    target_company_name: str | None = None,
+    extracted_text: str | None = None,
 ) -> tuple[Path, str, str]:
     stored = settings.UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_filename(filename)}"
     stored.write_bytes(raw)
@@ -35,8 +52,16 @@ def persist_and_index(
     )
     try:
         update_uploaded_file(file_id, status="PARSING")
-        text = extract_text(stored, mime_type, raw)
+        text = extracted_text if extracted_text is not None else extract_text(stored, mime_type, raw)
         update_uploaded_file(file_id, status="CHUNKING", extracted_text=text)
+        if target_company_name and not is_company_relevant(text, filename, target_company_name):
+            update_uploaded_file(
+                file_id,
+                status="EXCLUDED",
+                extracted_text=text,
+                error_message=f"심사대상 기업({target_company_name}) 정보가 확인되지 않아 근거에서 제외했습니다.",
+            )
+            return stored, text, file_id
         if text.strip():
             index_document(file_id, filename, stored, mime_type, text, case_id=case_id)
             update_uploaded_file(file_id, status="EMBEDDING")

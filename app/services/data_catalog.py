@@ -76,7 +76,7 @@ def build_data_catalog(case_id: str) -> dict[str, Any]:
             items.append({
                 "name": row["original_name"],
                 "type": _file_type(row["mime_type"], row["original_name"]),
-                "status": row["status"],
+                "status": "심사대상 기업 불일치" if row["status"] == "EXCLUDED" else row["status"],
                 "body": row["error_message"] or "업로드 후 색인 처리 중인 자료입니다.",
                 "size_bytes": row["size_bytes"],
                 "source_key": f"upload:{row['id']}",

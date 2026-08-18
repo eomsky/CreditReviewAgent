@@ -674,9 +674,25 @@ def search_documents(question: str, limit: int | None = None, case_id: str | Non
             NULL chunk_index,NULL page,NULL section,d.version
             FROM document_chunks ch JOIN documents d ON d.id=ch.document_id
             WHERE document_chunks MATCH ? AND d.status='READY'
-            AND (? IS NULL OR d.knowledge_scope='common' OR d.case_id=?)
+            AND (
+                ? IS NULL OR d.knowledge_scope='common' OR (
+                    d.case_id=? AND EXISTS (
+                        SELECT 1 FROM review_cases rc WHERE rc.id=? AND (
+                            ch.title LIKE '%' || rc.company_name || '%'
+                            OR ch.content LIKE '%' || rc.company_name || '%'
+                            OR EXISTS (
+                                SELECT 1 FROM uploaded_files uf
+                                WHERE uf.id=d.id AND (
+                                    uf.original_name LIKE '%' || rc.company_name || '%'
+                                    OR uf.extracted_text LIKE '%' || rc.company_name || '%'
+                                )
+                            )
+                        )
+                    )
+                )
+            )
             ORDER BY score LIMIT ?""",
-            (query, case_id, case_id, limit or settings.RAG_TOP_K),
+            (query, case_id, case_id, case_id, limit or settings.RAG_TOP_K),
         ).fetchall()
     return [dict(row) for row in rows]
 

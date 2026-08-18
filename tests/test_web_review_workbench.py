@@ -122,3 +122,8 @@ def test_initial_opinion_has_no_unverified_demo_numbers_and_citations_refresh():
 def test_v1_review_is_loaded_from_seeded_database():
     assert "/api/v1/poc/initial-review" in JS
     assert 'createdAt:"DB 기반 초기 의견"' in JS
+
+
+def test_entity_mismatched_uploads_are_not_shown_as_evidence():
+    assert 'includes("불일치")' in JS
+    assert "eligible.slice(0,3)" in JS
