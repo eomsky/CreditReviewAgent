@@ -27,6 +27,7 @@ class IssueType(StrEnum):
     UNSUPPORTED_CLAIM = "unsupported_claim"
     RISK_OMISSION = "risk_omission"
     WRITING_ISSUE = "writing_issue"
+    QUESTION_MISALIGNMENT = "question_misalignment"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     SOURCE_CONFLICT = "source_conflict"
     VALIDATION_FAILURE = "validation_failure"

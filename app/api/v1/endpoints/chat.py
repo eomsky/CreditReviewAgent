@@ -73,6 +73,13 @@ async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:
     save_message(conversation_id, "user", question)
     attachment_context = await _process_attachments(conversation_id, case_id, request.attachments)
     context_blocks: list[str] = []
+    recent_messages = request.messages[:-1][-8:]
+    if recent_messages:
+        recent_context = "\n".join(
+            f"{'사용자' if item.role == 'user' else 'AI'}: {item.content}"
+            for item in recent_messages
+        )
+        context_blocks.append(f"[최근 대화]\n{recent_context}")
     if request.current_review.strip():
         context_blocks.append(f"[현재 화면의 심사의견]\n{request.current_review.strip()}")
     if request.screen_context:
@@ -118,8 +125,8 @@ async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:
 
     answer = result.get("final_answer", "")
     metadata = {
-        "agent": ("validator_b" if not result.get("approved", True) else "generator_a_verified") if request.response_mode == "review" else "generator_a",
-        "validator_approved": result.get("approved", True) if request.response_mode == "review" else None,
+        "agent": "generator_a_verified" if result.get("approved", True) else "validator_b",
+        "validator_approved": result.get("approved", True),
         "validator_issues": result.get("validation_issues", []),
         "sql": result.get("sql_used", ""),
         "sources": result.get("sources", []),
@@ -129,6 +136,7 @@ async def _answer(request: ChatRequest) -> tuple[str, str, dict[str, Any]]:
         "revision_count": result.get("revision_count", 0),
         "retrieval_count": result.get("retrieval_count", 0),
         "issue_types": result.get("issue_types", []),
+        "intent_brief": result.get("intent_brief", {}),
     }
     save_message(conversation_id, "assistant", answer, metadata)
     return conversation_id, answer, metadata
@@ -167,7 +175,7 @@ async def create_streaming_chat_completion(request: ChatRequest) -> StreamingRes
                     continue
                 result = event["result"]
                 answer = result.get("final_answer", "")
-                metadata = {"agent": "generator_a_verified" if request.response_mode == "review" else "generator_a", "validator_approved": result.get("approved", True) if request.response_mode == "review" else None, "validator_issues": result.get("validation_issues", []) if request.response_mode == "review" else [], "issue_types": result.get("issue_types", []) if request.response_mode == "review" else [], "sql": result.get("sql_used", ""), "sources": result.get("sources", []), "workflow_status": result.get("workflow_status", "approved"), "human_review_required": result.get("workflow_status") == "needs_human_review", "human_review_reason": result.get("human_review_reason", ""), "revision_count": result.get("revision_count", 0), "retrieval_count": result.get("retrieval_count", 0)}
+                metadata = {"agent": "generator_a_verified" if result.get("approved", True) else "validator_b", "validator_approved": result.get("approved", True), "validator_issues": result.get("validation_issues", []), "issue_types": result.get("issue_types", []), "sql": result.get("sql_used", ""), "sources": result.get("sources", []), "workflow_status": result.get("workflow_status", "approved"), "human_review_required": result.get("workflow_status") == "needs_human_review", "human_review_reason": result.get("human_review_reason", ""), "revision_count": result.get("revision_count", 0), "retrieval_count": result.get("retrieval_count", 0), "intent_brief": result.get("intent_brief", {})}
                 save_message(conversation_id, "assistant", answer, metadata)
                 yield _sse({"type": "done", "message": answer, "metadata": metadata})
         except Exception as exc:

@@ -2,7 +2,10 @@ import asyncio
 
 from app.domain.evidence import Evidence, EvidenceSourceType
 from app.graphs.qa_graph import MAX_RETRIEVAL_COUNT, QADeps, run_qa, stream_qa
-from app.graphs.qa_graph import _generator_messages
+from app.graphs.qa_graph import _generator_messages, _parse_intent_brief
+
+
+INTENT = '{"user_goal":"부채비율 검토","requested_output":"근거 기반 답변","target_entities":["부채비율"],"required_evidence":["재무자료"],"excluded_context":[],"must_answer_directly":true,"ambiguity":null,"retrieval_queries":["부채비율"]}'
 
 
 class FakeLLM:
@@ -33,7 +36,7 @@ class FakeRetrieval:
 
 def run_with(responses):
     retrieval = FakeRetrieval()
-    result = asyncio.run(run_qa("부채비율을 검토해줘", deps=QADeps(FakeLLM(responses), retrieval), response_mode="review"))
+    result = asyncio.run(run_qa("부채비율을 검토해줘", deps=QADeps(FakeLLM([INTENT, *responses]), retrieval), response_mode="review"))
     return result, retrieval
 
 
@@ -69,7 +72,7 @@ def test_malformed_validator_output_requires_human_review():
 
 
 def test_stream_and_non_stream_use_same_graph_result():
-    responses = ['{"approved":true,"issues":[],"missing_evidence_queries":[]}']
+    responses = [INTENT, '{"approved":true,"issues":[],"missing_evidence_queries":[]}']
     deps = QADeps(FakeLLM(responses, ["첫 ", "토큰 ", "응답"]), FakeRetrieval())
 
     async def collect():
@@ -95,13 +98,39 @@ def test_chat_mode_is_concise_while_review_mode_remains_structured():
     assert "상환능력" in review_prompt
 
 
-def test_chat_mode_skips_validator_entirely():
-    deps = QADeps(FakeLLM(["자연스러운 대화 답변"]), FakeRetrieval())
+def test_chat_mode_validates_alignment_with_interpreted_intent():
+    intent = '{"user_goal":"신청금액 확인","requested_output":"금액만 간결하게","target_entities":["신청금액"],"required_evidence":["신청정보"],"excluded_context":["심사의견 요약"],"must_answer_directly":true,"ambiguity":null,"retrieval_queries":["신청금액"]}'
+    deps = QADeps(FakeLLM([
+        intent,
+        "신청금액은 50억원입니다.",
+        '{"approved":true,"issues":[],"missing_evidence_queries":[]}',
+    ]), FakeRetrieval())
     result = asyncio.run(run_qa("신청금액이 얼마야?", deps=deps, response_mode="chat"))
-    assert result["final_answer"] == "자연스러운 대화 답변"
+    assert result["final_answer"] == "신청금액은 50억원입니다."
     assert result["workflow_status"] == "approved"
-    assert result.get("validation_history") == []
-    assert "approved" not in result
+    assert result["approved"] is True
+    assert result["intent_brief"]["excluded_context"] == ["심사의견 요약"]
+
+
+def test_chat_misalignment_is_revised_before_returning():
+    intent = '{"user_goal":"현재 조회 가능한 테이블 목록 확인","requested_output":"테이블명 목록","target_entities":["DB 테이블"],"required_evidence":["데이터 카탈로그"],"excluded_context":["현재 심사의견"],"must_answer_directly":true,"ambiguity":null,"retrieval_queries":["데이터 카탈로그 테이블"]}'
+    deps = QADeps(FakeLLM([
+        intent,
+        "사업 및 거래 현황을 설명하겠습니다.",
+        '{"approved":false,"issues":[{"type":"question_misalignment","message":"테이블 목록에 답하지 않음"}],"missing_evidence_queries":[]}',
+        "현재 조회 가능한 테이블은 companies, financials, loans입니다.",
+        '{"approved":true,"issues":[],"missing_evidence_queries":[]}',
+    ]), FakeRetrieval())
+    result = asyncio.run(run_qa("현재 참조하고 있는 테이블 리스트를 보여줘", deps=deps, response_mode="chat"))
+    assert result["revision_count"] == 1
+    assert "companies" in result["final_answer"]
+    assert result["workflow_status"] == "approved"
+
+
+def test_malformed_intent_falls_back_to_original_question():
+    brief = _parse_intent_brief("not-json", "현재 자료를 알려줘")
+    assert brief["user_goal"] == "현재 자료를 알려줘"
+    assert brief["retrieval_queries"] == ["현재 자료를 알려줘"]
 
 
 def test_review_prompt_requires_complete_markdown_sections():

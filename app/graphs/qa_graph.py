@@ -18,7 +18,7 @@ from app.services.retrieval import RetrievalService
 
 MAX_REVISION_COUNT = 2
 MAX_RETRIEVAL_COUNT = 2
-PROMPT_VERSION = "credit-review-v2"
+PROMPT_VERSION = "credit-review-v3"
 
 
 class LLMClient(Protocol):
@@ -56,6 +56,7 @@ class QAState(TypedDict, total=False):
     final_answer: str
     stream_enabled: bool
     response_mode: str
+    intent_brief: dict[str, Any]
 
 
 def default_dependencies() -> QADeps:
@@ -77,6 +78,53 @@ def _evidence_context(evidences: list[Evidence], attachment: str) -> str:
     return "\n\n".join(blocks) or "제공된 근거 없음"
 
 
+def _default_intent_brief(question: str) -> dict[str, Any]:
+    return {
+        "user_goal": question,
+        "requested_output": "사용자 질문에 직접 답하는 결과",
+        "target_entities": [],
+        "required_evidence": [],
+        "excluded_context": [],
+        "must_answer_directly": True,
+        "ambiguity": None,
+        "retrieval_queries": [question],
+    }
+
+
+def _parse_intent_brief(raw: str, question: str) -> dict[str, Any]:
+    cleaned = re.sub(r"^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$", "", raw.strip(), flags=re.IGNORECASE)
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        value = None
+        for index, character in enumerate(cleaned):
+            if character == "{":
+                try:
+                    value, _ = decoder.raw_decode(cleaned[index:])
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if value is None:
+            return _default_intent_brief(question)
+    if not isinstance(value, dict):
+        return _default_intent_brief(question)
+    fallback = _default_intent_brief(question)
+    brief = {
+        "user_goal": str(value.get("user_goal") or question).strip(),
+        "requested_output": str(value.get("requested_output") or fallback["requested_output"]).strip(),
+        "target_entities": [str(item) for item in value.get("target_entities", []) if str(item).strip()][:10],
+        "required_evidence": [str(item) for item in value.get("required_evidence", []) if str(item).strip()][:10],
+        "excluded_context": [str(item) for item in value.get("excluded_context", []) if str(item).strip()][:10],
+        "must_answer_directly": bool(value.get("must_answer_directly", True)),
+        "ambiguity": str(value["ambiguity"]).strip() if value.get("ambiguity") else None,
+        "retrieval_queries": [str(item) for item in value.get("retrieval_queries", []) if str(item).strip()][:6],
+    }
+    if not brief["retrieval_queries"]:
+        brief["retrieval_queries"] = [brief["user_goal"]]
+    return brief
+
+
 def _generator_messages(state: QAState, *, revision: bool = False) -> list[dict[str, Any]]:
     rules = """[ROLE] 당신은 근거 중심의 기업여신 심사 생성 에이전트입니다.
 [RULES]
@@ -93,10 +141,14 @@ def _generator_messages(state: QAState, *, revision: bool = False) -> list[dict[
     else:
         output_requirements = """우측 대화창의 일반 대화입니다.
 질문의 의도와 맥락에 맞춰 자연스럽게 답하세요. 답변의 길이와 표현 형식은 질문에 가장 적합한 방식을 스스로 선택하세요."""
-    body = f"""[QUESTION]\n{state['question']}
+    intent_brief = json.dumps(state.get("intent_brief") or _default_intent_brief(state["question"]), ensure_ascii=False)
+    body = f"""[ORIGINAL USER QUESTION]\n{state['question']}
+[INTENT BRIEF]\n{intent_brief}
 [EVIDENCE]\n{state.get('evidence_context', '')}
 [OUTPUT REQUIREMENTS]
-{output_requirements}"""
+{output_requirements}
+The original user question is authoritative. Follow the intent brief, use only required context, avoid excluded context, and answer the requested output directly.
+If ambiguity is not null and materially changes the answer, ask one concise clarification question instead of guessing."""
     if revision:
         body += f"""\n[CURRENT ANSWER]\n{state.get('revised_draft') or state.get('draft', '')}
 [VALIDATION ISSUES]\n{json.dumps(state.get('validation_issues', []), ensure_ascii=False)}
@@ -143,9 +195,30 @@ def _deterministic_issues(state: QAState, candidate: str) -> list[ValidationIssu
 def build_graph(deps: QADeps | None = None):
     deps = deps or default_dependencies()
 
+    async def interpret(state: QAState) -> dict[str, Any]:
+        prompt = f"""You are an intent interpreter, not an answer generator.
+Read the original Korean user question and the available conversation/screen context.
+Create an open-ended task brief for the downstream generator. Do not force the request into a predefined category.
+Preserve the original meaning, identify the desired output, required evidence, context that should be excluded, ambiguity, and useful retrieval queries.
+If the request is clear, ambiguity must be null. Never answer the user's question.
+[ORIGINAL QUESTION]
+{state['question']}
+[AVAILABLE CONTEXT]
+{state.get('attachment_context', '')[:6000]}
+[OUTPUT JSON]
+{{"user_goal":"...","requested_output":"...","target_entities":[],"required_evidence":[],"excluded_context":[],"must_answer_directly":true,"ambiguity":null,"retrieval_queries":[]}}"""
+        raw = await deps.llm.complete(
+            [{"role": "system", "content": "사용자 의도를 왜곡하지 말고 JSON 작업 지시서만 작성하세요."}, {"role": "user", "content": prompt}],
+            max_tokens=600,
+        )
+        brief = _parse_intent_brief(raw, state["question"])
+        _event(state, "intent_interpreter", "intent.interpreted", json.dumps(brief, ensure_ascii=False))
+        return {"intent_brief": brief}
+
     async def retrieve(state: QAState) -> dict[str, Any]:
         retrieval_count = state.get("retrieval_count", 0) + 1
-        extra = state.get("missing_evidence_queries", [])
+        brief_queries = list((state.get("intent_brief") or {}).get("retrieval_queries", []))
+        extra = [*brief_queries, *state.get("missing_evidence_queries", [])]
         evidence, query_id = deps.retrieval.retrieve(state["question"], case_id=state.get("case_id", ""), extra_queries=extra)
         conflicts = deps.retrieval.find_conflicts(evidence)
         result = {
@@ -185,11 +258,19 @@ def build_graph(deps: QADeps | None = None):
     async def validate(state: QAState) -> dict[str, Any]:
         candidate = state.get("revised_draft") or state.get("draft", "")
         deterministic = _deterministic_issues(state, candidate)
+        mode_checks = (
+            "원 질문에 직접 답했는지, 의도와 결과 형식이 맞는지, 제외 문맥에 끌려 엉뚱한 답을 하지 않았는지, 근거와 일치하는지."
+            if state.get("response_mode") == "chat"
+            else "근거 일치, 수치 정확성, unsupported claim, 질문 충족, 위험 누락, 출처 충돌, 요청 형식 준수."
+        )
         prompt = f"""[ROLE] 당신은 새 답변을 작성하지 않는 독립 검증 에이전트입니다.
-[CHECKS] 근거 일치, 수치 정확성, unsupported claim, 질문 충족, 위험 누락, 출처 충돌.
+[ORIGINAL QUESTION]\n{state.get('question', '')}
+[INTENT BRIEF]\n{json.dumps(state.get('intent_brief', {}), ensure_ascii=False)}
+[CHECKS]\n{mode_checks}
+질문과 무관하거나 요청한 결과를 주지 않으면 question_misalignment 이슈를 반환하세요.
 [EVIDENCE]\n{state.get('evidence_context', '')}
 [ANSWER]\n{candidate}
-[OUTPUT] JSON 하나만 반환: {{"approved": true, "issues": [{{"type": "writing_issue", "message": "...", "evidence_ids": []}}], "missing_evidence_queries": []}}"""
+[OUTPUT] JSON 하나만 반환: {{"approved": true, "issues": [{{"type": "question_misalignment", "message": "...", "evidence_ids": []}}], "missing_evidence_queries": []}}"""
         raw = await deps.llm.complete([{"role": "system", "content": "검증만 수행하고 JSON schema를 지키세요."}, {"role": "user", "content": prompt}], max_tokens=700)
         issues = list(deterministic)
         missing: list[str] = []
@@ -230,9 +311,7 @@ def build_graph(deps: QADeps | None = None):
     async def finalize(state: QAState) -> dict[str, str]:
         answer = state.get("revised_draft") or state.get("draft", "")
         status = state.get("workflow_status")
-        if state.get("response_mode") == "chat":
-            status = WorkflowStatus.APPROVED
-        elif not status or status == WorkflowStatus.RUNNING:
+        if not status or status == WorkflowStatus.RUNNING:
             status = WorkflowStatus.APPROVED if state.get("approved") else WorkflowStatus.NEEDS_HUMAN_REVIEW
         if status == WorkflowStatus.NEEDS_HUMAN_REVIEW:
             answer += f"\n\n※ 담당자 추가 확인 필요: {state.get('human_review_reason') or '검증 한도 초과'}"
@@ -240,15 +319,12 @@ def build_graph(deps: QADeps | None = None):
         return {"final_answer": answer, "workflow_status": status}
 
     workflow = StateGraph(QAState)
-    for name, node in (("retrieve", retrieve), ("generate", generate), ("validate", validate), ("revise", revise), ("human", human), ("finalize", finalize)):
+    for name, node in (("interpret", interpret), ("retrieve", retrieve), ("generate", generate), ("validate", validate), ("revise", revise), ("human", human), ("finalize", finalize)):
         workflow.add_node(name, node)
-    workflow.add_edge(START, "retrieve")
+    workflow.add_edge(START, "interpret")
+    workflow.add_edge("interpret", "retrieve")
     workflow.add_edge("retrieve", "generate")
-    workflow.add_conditional_edges(
-        "generate",
-        lambda state: "finalize" if state.get("response_mode") == "chat" else "validate",
-        {"finalize": "finalize", "validate": "validate"},
-    )
+    workflow.add_edge("generate", "validate")
     workflow.add_conditional_edges("validate", route, {"retrieve": "retrieve", "revise": "revise", "human": "human", "finalize": "finalize"})
     workflow.add_edge("revise", "validate")
     workflow.add_edge("human", "finalize")

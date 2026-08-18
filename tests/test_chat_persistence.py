@@ -44,3 +44,18 @@ def test_screen_and_server_catalog_are_included_in_agent_context(tmp_path: Path,
     assert "[현재 입수 데이터 카탈로그]" in context
     assert '"재무제표원장"' in context
     assert '"companies"' in context
+
+
+def test_recent_conversation_is_available_to_intent_interpreter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'history.db'}")
+    initialize_database(seed=True)
+    request = ChatRequest(messages=[
+        ChatMessage(role="user", content="재무자료와 대출자료를 비교해줘"),
+        ChatMessage(role="assistant", content="두 자료를 비교했습니다."),
+        ChatMessage(role="user", content="그중 두 번째 자료의 행 수는?"),
+    ])
+    _, _, question, context = asyncio.run(_prepare_request(request))
+    assert question == "그중 두 번째 자료의 행 수는?"
+    assert "[최근 대화]" in context
+    assert "재무자료와 대출자료를 비교해줘" in context
+    assert "두 자료를 비교했습니다." in context
