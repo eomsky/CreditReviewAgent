@@ -69,15 +69,20 @@ def _last_user_question(request: ChatRequest) -> str:
 def _catalog_summary_for_prompt(case_id: str) -> dict[str, Any]:
     """Keep the default LLM context compact; detailed rows are retrieved only when requested."""
     catalog = build_data_catalog(case_id)
-    items = [{
-        "name": item.get("name"),
-        "type": item.get("type"),
-        "status": item.get("status"),
-        "row_count": item.get("row_count"),
-        "column_count": len(item.get("columns") or []),
-        "knowledge_scope": item.get("knowledge_scope"),
-    } for item in catalog["items"]]
-    return {"count": len(items), "items": items, "refreshed_at": catalog["refreshed_at"]}
+    items = []
+    for item in catalog["items"]:
+        columns = item.get("columns") or []
+        key_columns = [column for column in columns if column not in {"id", "created_at"}][:5]
+        items.append({
+            "name": item.get("name"),
+            "type": item.get("type"),
+            "status": item.get("status"),
+            "row_count": item.get("row_count"),
+            "column_count": len(columns),
+            "key_columns": key_columns,
+            "knowledge_scope": item.get("knowledge_scope"),
+        })
+    return {"count": len(items), "items": items}
 
 
 async def _prepare_request(request: ChatRequest) -> tuple[str, str, str, str]:

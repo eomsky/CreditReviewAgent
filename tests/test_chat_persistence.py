@@ -75,3 +75,7 @@ def test_catalog_prompt_is_compact_and_not_duplicated(tmp_path: Path, monkeypatc
     }
     assert all("rows" not in item and "columns" not in item and "body" not in item for item in summary["items"])
     assert all("column_count" in item for item in summary["items"])
+    assert all("key_columns" in item for item in summary["items"])
+    assert all("refreshed_at" not in item for item in summary["items"])
+    table_items = [item for item in summary["items"] if item["type"] == "테이블"]
+    assert all("id" not in item["key_columns"] and "created_at" not in item["key_columns"] for item in table_items)

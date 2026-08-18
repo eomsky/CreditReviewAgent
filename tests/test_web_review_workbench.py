@@ -91,3 +91,11 @@ def test_chat_request_does_not_resend_catalog_rows_or_samples():
     assert "function sourceCatalog()" not in JS
     assert "sample_rows" not in JS
     assert "screen_context:screenContext()" in JS
+
+
+def test_chat_answers_render_safe_markdown_structure():
+    assert "function chatInline" in JS
+    assert "function renderChatMarkdown" in JS
+    assert "chat-heading" in JS
+    assert "chat-list" in JS
+    assert "renderChatMarkdown(text)" in JS
