@@ -127,3 +127,11 @@ def test_v1_review_is_loaded_from_seeded_database():
 def test_entity_mismatched_uploads_are_not_shown_as_evidence():
     assert 'includes("불일치")' in JS
     assert "eligible.slice(0,3)" in JS
+
+
+def test_opinion_versions_are_persisted_and_latest_is_restored():
+    assert "persistOpinionVersion" in JS
+    assert "loadOpinionVersions" in JS
+    assert "/review-versions" in JS
+    assert "savedVersion.version_number" in JS
+    assert "저장된 심사의견을 불러오는 중입니다" in JS

@@ -187,6 +187,14 @@ CREATE TABLE IF NOT EXISTS review_cases (
     updated_at TEXT NOT NULL,
     completed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS review_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id TEXT NOT NULL REFERENCES review_cases(id),
+    version_number INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(case_id, version_number)
+);
 CREATE TABLE IF NOT EXISTS agent_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     case_id TEXT NOT NULL REFERENCES review_cases(id),
@@ -512,6 +520,32 @@ def delete_case_document(case_id: str, document_id: str) -> Path | None:
         connection.execute("DELETE FROM uploaded_files WHERE id=?", (document_id,))
     return Path(row[0])
 
+
+
+def list_review_versions(case_id: str) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """SELECT version_number,content,created_at FROM review_versions
+            WHERE case_id=? ORDER BY version_number""",
+            (case_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def save_review_version(case_id: str, content: str) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    with connect() as connection:
+        if not connection.execute("SELECT 1 FROM review_cases WHERE id=?", (case_id,)).fetchone():
+            raise ValueError("심사건을 찾을 수 없습니다.")
+        next_version = connection.execute(
+            "SELECT COALESCE(MAX(version_number),0)+1 FROM review_versions WHERE case_id=?",
+            (case_id,),
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO review_versions(case_id,version_number,content,created_at) VALUES (?,?,?,?)",
+            (case_id, next_version, content, now),
+        )
+    return {"version_number": next_version, "content": content, "created_at": now}
 
 def record_agent_event(
     case_id: str,
